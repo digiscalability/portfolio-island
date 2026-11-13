@@ -57,3 +57,56 @@ export function framingFov(aspect: number): number {
   const wanted = toDeg(2 * Math.atan(Math.tan(toRad(H_FOV_FLOOR) / 2) / aspect));
   return Math.min(V_FOV_CEIL, wanted);
 }
+
+// ── A9: the tour rail's pacing (pure, so test/framing.test.ts sums it) ──────
+
+/** Shortest and longest planned leg between two tour stops, seconds. */
+export const TOUR_LEG_MIN_S = 2.6;
+export const TOUR_LEG_MAX_S = 4.2;
+/** No leg is planned to turn the view faster than this at its peak (deg/s). */
+export const TOUR_PEAK_DEG_S = 120;
+/**
+ * Seconds the camera studies each stop: 4.0, the floor the plan allows. At
+ * 4.5 the full tour ran 50.5 s against its 44 s bar, because the districts'
+ * legs arc 63-118 deg round the planet and four of six clamp at 4.2 s.
+ */
+export const TOUR_DWELL_S = 4.0;
+/** The first leg rises this far (u) over its first TOUR_LIFT_S seconds. */
+export const TOUR_LIFT_U = 3;
+export const TOUR_LIFT_S = 0.5;
+/** A caption, "Stop n of m · " included, is at most this many characters. */
+export const TOUR_CAPTION_MAX = 110;
+
+/** easeInOutSine: zero slope at both ends; its peak slope is π/2 at k = 0.5. */
+export function easeInOutSine(k: number): number {
+  const c = Math.min(1, Math.max(0, k));
+  return (1 - Math.cos(Math.PI * c)) / 2;
+}
+
+/**
+ * A leg's duration: clamp(1.6 + arcDeg × 0.035, 2.6, 4.2) s, where arcDeg is
+ * the leg's arc around the planet. A leg whose view would turn `turnDeg` with
+ * a peak over TOUR_PEAK_DEG_S under easeInOutSine is lengthened until it
+ * does not (peak = π/2 × turnDeg / T).
+ */
+export function tourLegDuration(arcDeg: number, turnDeg = 0): number {
+  const base = Math.min(TOUR_LEG_MAX_S, Math.max(TOUR_LEG_MIN_S, 1.6 + arcDeg * 0.035));
+  const peakFloor = (Math.PI / 2) * (Math.abs(turnDeg) / TOUR_PEAK_DEG_S);
+  return Math.max(base, peakFloor);
+}
+
+/** The first leg's extra height: 0 → TOUR_LIFT_U over TOUR_LIFT_S, fading out as the leg lands. */
+export function tourFirstLegLift(t: number, e: number): number {
+  const u = Math.min(1, Math.max(0, t / TOUR_LIFT_S));
+  return TOUR_LIFT_U * u * u * (3 - 2 * u) * (1 - e);
+}
+
+/** A stop's caption with its place in the tour baked in. */
+export function tourCaption(n: number, m: number, text: string): string {
+  return `Stop ${n} of ${m} · ${text}`;
+}
+
+/** Characters as the caption renders them (a code point each, so an escaped dash is one). */
+export function renderedLength(text: string): number {
+  return [...text].length;
+}

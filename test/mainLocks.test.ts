@@ -1768,3 +1768,29 @@ describe('w2 integration: the Sailor from the water, and the conversation releas
     expect(cine).not.toContain('c.ending > 0.35');
   });
 });
+
+describe('A9: tour captions fit 110 characters with their stop number', () => {
+  test("every addStop caption plus 'Stop n of 6 · ' is 110 characters or fewer", () => {
+    const body = bodyOf(stripped('main-simple.ts'), 'private startTour(');
+    const lits = [...body.matchAll(/addStop\(\s*[^,]+,\s*(['"`])((?:\\.|(?!\1).)*)\1/g)].map((m) =>
+      m[2]
+        .replace(/\\u([0-9a-f]{4})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)))
+        .replace(/\\'/g, "'")
+        .replace(/\$\{aiCount\}/g, '99'),
+    );
+    expect(lits.length).toBe(10);
+    for (const c of lits) expect([...`Stop 6 of 6 · ${c}`].length).toBeLessThanOrEqual(110);
+    expect(body).toContain(
+      'stops[i].caption = tourCaption(i + 1, stops.length, stops[i].caption);',
+    );
+  });
+
+  test('the push-in and the first tour leg start on the orbit camera pose', () => {
+    expect(bodyOf(stripped('main-simple.ts'), 'private beginNpcDialogue(')).toContain(
+      'this.scene.getOrbitCamera().getFollowPose(pos, look);',
+    );
+    expect(bodyOf(stripped('main-simple.ts'), 'private startTour(')).toContain(
+      'this.scene.getOrbitCamera().getFollowPose(this._tourFromPos, fromLook);',
+    );
+  });
+});

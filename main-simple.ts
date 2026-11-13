@@ -16,6 +16,13 @@ import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { featuredSell, saleSplit, type ProviderKey } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
+import {
+  easeInOutSine,
+  tourCaption,
+  tourFirstLegLift,
+  tourLegDuration,
+  TOUR_DWELL_S,
+} from './Framing';
 import { fx } from './FxBudget';
 import { GameScene } from './GameScene';
 import {
@@ -206,6 +213,10 @@ export class SimpleApp {
     fromLook: THREE.Vector3;
     /** The villager this tour is holding in place (GameScene dialogue hold). */
     held: string | null;
+    /** A9: this leg's flight time (legDuration), seconds. */
+    legS: number;
+    /** A9: the view direction the leg leaves on (unit). */
+    fromView: THREE.Vector3;
   } | null = null;
   /** afterIntro has run: the welcome card, if any, is up or already closed. */
   private introSettled = false;
@@ -213,6 +224,9 @@ export class SimpleApp {
   private readonly _tourDir = new THREE.Vector3();
   private readonly _tourLook = new THREE.Vector3();
   private readonly _tourUp = new THREE.Vector3();
+  private readonly _tourFromPos = new THREE.Vector3();
+  private readonly _tourViewA = new THREE.Vector3();
+  private readonly _tourViewB = new THREE.Vector3();
   private readonly _tourAxis = new THREE.Vector3();
   private readonly _tourQ = new THREE.Quaternion();
   // Villager line-of-sight probe (firstHitOnly: the terrain's BVH fast path)
@@ -5143,8 +5157,8 @@ export class SimpleApp {
   }
 
   // \u2500\u2500 Tour mode: skippable cinematic rail (welcome CTA / ?tour=1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-  private static readonly TOUR_FLY_S = 2.6; // seconds flying between stops
-  private static readonly TOUR_DWELL_S = 6.0; // seconds studying each stop
+  // A9: each leg's flight time comes from legDuration (Framing.tourLegDuration),
+  // and the dwell is Framing.TOUR_DWELL_S (4.5 s, was 6.0).
 
   /**
    * Build the rail and hand the camera to it. Stops are derived from live
@@ -5210,7 +5224,7 @@ export class SimpleApp {
       );
       addStop(
         storyteller,
-        `${aiCount} villagers talk through Claude Haiku 4.5, with a voice \u2014 planned each morning, reported on nightly.`,
+        `${aiCount} villagers talk through Claude Haiku 4.5, with a voice \u2014 planned each morning.`,
         6.5,
         9,
         storytellerNames,
@@ -5242,7 +5256,7 @@ export class SimpleApp {
       );
       addStop(
         gardener,
-        `${aiCount} townsfolk talk through Claude Haiku 4.5 \u2014 planned each morning, reported on nightly. Walk up and talk.`,
+        `${aiCount} townsfolk talk through Claude Haiku 4.5 \u2014 planned each morning, reported on nightly.`,
         // High enough to clear tree canopies \u2014 NPC positions are live, so a low
         // camera is occlusion roulette (a prod capture found a tree filling it).
         6.5,
@@ -5263,11 +5277,20 @@ export class SimpleApp {
       );
     }
     if (stops.length === 0) return;
+    // A9: 'Stop n of m · ' is baked in once the stops are known.
+    for (let i = 0; i < stops.length; i++) {
+      stops[i].caption = tourCaption(i + 1, stops.length, stops[i].caption);
+    }
     track(recruiter ? 'recruit_tour_start' : 'tour_start');
     const cam = this.scene.getCamera();
     this.scene.setCameraSuspended(true);
     this.ui.hideInteractionPrompt();
-    const playerPos = this.scene.getPlayer()?.getWorldPosition() ?? stops[0].look.clone();
+    // A9: the first leg leaves from the orbit camera's own look target, so
+    // its first frame turns nothing (it was seeded at the player's feet).
+    const fromLook = stops[0].look.clone();
+    if (this.scene.getPlayer()) {
+      this.scene.getOrbitCamera().getFollowPose(this._tourFromPos, fromLook);
+    }
     this.tour = {
       stops,
       idx: 0,
@@ -5275,10 +5298,13 @@ export class SimpleApp {
       phase: 'fly',
       fromDir: cam.position.clone().normalize(),
       fromR: Math.max(cam.position.length(), 20),
-      fromLook: playerPos.clone(),
+      fromLook,
       held: null,
+      legS: 0,
+      fromView: new THREE.Vector3(),
     };
     this.holdTourVillager(stops[0]);
+    this.tour.legS = this.legDuration(this.tour, stops[0]);
     this.ui.showTourOverlay(() => this.endTour(true));
     // The opening caption shows at once (it introduces the whole planet);
     // every later caption swaps in on LANDING (landTourStop).
@@ -5389,6 +5415,30 @@ export class SimpleApp {
     tour.held = null;
   }
 
+  /**
+   * A9: the leg about to fly to `stop`: its arc round the planet sets the
+   * time (Framing.tourLegDuration), lengthened when the view would turn
+   * faster than 120 deg/s at the ease's peak. Seeds the leg's first view.
+   */
+  private legDuration(tour: NonNullable<SimpleApp['tour']>, stop: TourStop): number {
+    const arcDeg = THREE.MathUtils.radToDeg(tour.fromDir.angleTo(stop.dir));
+    const fromPos = this._tourFromPos.copy(tour.fromDir).multiplyScalar(tour.fromR);
+    const viewA = this._tourViewA.subVectors(tour.fromLook, fromPos);
+    tour.fromView.copy(viewA).normalize();
+    const viewB = this._tourViewB.copy(stop.dir).multiplyScalar(stop.r);
+    viewB.subVectors(stop.look, viewB);
+    const turnDeg =
+      viewA.lengthSq() > 1e-9 && viewB.lengthSq() > 1e-9
+        ? THREE.MathUtils.radToDeg(viewA.angleTo(viewB))
+        : 0;
+    return tourLegDuration(arcDeg, turnDeg);
+  }
+
+  /** A9: the first leg's rise (+3 u over 0.5 s, gone by landing); 0 on later legs. */
+  private firstLegLift(tour: NonNullable<SimpleApp['tour']>, e: number): number {
+    return tour.idx === 0 ? tourFirstLegLift(tour.t, e) : 0;
+  }
+
   /** The camera has arrived: start the dwell and show THIS stop's caption.
    *  Swapping it at take-off described the next stop for the whole flight. */
   private landTourStop(): void {
@@ -5418,15 +5468,26 @@ export class SimpleApp {
         this.landTourStop();
         return;
       }
-      const k = Math.min(1, tour.t / SimpleApp.TOUR_FLY_S);
-      const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+      const k = Math.min(1, tour.t / tour.legS);
+      const e = easeInOutSine(k);
       this.slerpDirs(this._tourDir, tour.fromDir, stop.dir, e);
       // Altitude hop: arcing over the terrain beats a chord that dips through it
-      const r = tour.fromR + (stop.r - tour.fromR) * e + Math.sin(Math.PI * e) * 7;
+      // (A9: the first leg also lifts 3 u over its first 0.5 s, firstLegLift).
+      const r =
+        tour.fromR +
+        (stop.r - tour.fromR) * e +
+        Math.sin(Math.PI * e) * 7 +
+        this.firstLegLift(tour, e);
       cam.position.copy(this._tourDir).multiplyScalar(r);
-      this._tourLook.copy(tour.fromLook).lerp(stop.look, e);
+      // A9: the VIEW direction slerps from the leg's first view to the
+      // stop's, so the turn per frame is the leg's turn under the ease
+      // (legDuration keeps its peak at 120 deg/s). Lerping the look POINT
+      // whipped the view while the camera was still close to the player.
+      const toView = this._tourViewB.copy(stop.dir).multiplyScalar(stop.r);
+      toView.subVectors(stop.look, toView).normalize();
+      this.slerpDirs(this._tourViewA, tour.fromView, toView, e);
       cam.up.copy(this._tourUp.copy(cam.position).normalize());
-      cam.lookAt(this._tourLook);
+      cam.lookAt(this._tourLook.copy(cam.position).add(this._tourViewA));
       if (k >= 1) this.landTourStop();
     } else {
       // Gentle drift around the stop while the caption is read — held static
@@ -5440,7 +5501,7 @@ export class SimpleApp {
       cam.position.copy(stop.dir).multiplyScalar(stop.r);
       cam.up.copy(up);
       cam.lookAt(stop.look);
-      if (tour.t >= SimpleApp.TOUR_DWELL_S) this.advanceTourStop();
+      if (tour.t >= TOUR_DWELL_S) this.advanceTourStop();
     }
   }
 
@@ -5462,6 +5523,7 @@ export class SimpleApp {
     tour.fromLook.copy(prev.look);
     // The caption stays on the stop being left until the camera lands.
     this.holdTourVillager(tour.stops[tour.idx]);
+    tour.legS = this.legDuration(tour, tour.stops[tour.idx]);
   }
 
   private endTour(skipped: boolean): void {
@@ -5520,7 +5582,11 @@ export class SimpleApp {
     ending: number; // <0 = active; >=0 = seconds into the release glide
     /** The pose the release glide starts from (its first frame sets it). */
     from: { pos: THREE.Vector3; look: THREE.Vector3; up: THREE.Vector3; fov: number } | null;
+    /** A9: seconds since the push-in began (its ease-in ramp). */
+    age: number;
   } | null = null;
+  /** A9: the push-in's rates ramp in over this long, so its first frame turns almost nothing. */
+  private static readonly NPC_CINE_RAMP_S = 0.6;
   /** The release glide's length: the old 0.35 s whip-panned the last frame (w2 integration). */
   private static readonly NPC_CINE_RELEASE_S = 0.6;
   private readonly _cineGoalPos = new THREE.Vector3();
@@ -5706,13 +5772,20 @@ export class SimpleApp {
     const cam = this.scene.getCamera();
     const player = this.scene.getPlayer();
     if (!cam || !player) return;
+    // A9: the push-in starts on the orbit camera's own pose and look target
+    // (lookAhead and the chest offset included), not the player's feet: the
+    // first frame turned 11.8 deg when the look was seeded at the root.
+    const pos = new THREE.Vector3();
+    const look = new THREE.Vector3();
+    this.scene.getOrbitCamera().getFollowPose(pos, look);
     this.npcCine = {
       name,
-      pos: cam.position.clone(),
-      look: player.getWorldPosition().clone(),
+      pos,
+      look,
       prevFov: cam.fov,
       ending: -1,
       from: null,
+      age: 0,
     };
     this.scene.setCameraSuspended(true);
   }
@@ -5773,9 +5846,15 @@ export class SimpleApp {
       // Slow, savoured push-in (~2s to settle — was k 3.2/4.5/3.0, which
       // read as a snap zoom): the look leads the dolly slightly, the FOV
       // narrows last, like a camera operator leaning in.
-      expDecayV3(c.pos, desired, 1.5, dt);
-      expDecayV3(c.look, desiredLook, 2.1, dt);
-      cam.fov = expDecay(cam.fov, c.prevFov - 8, 1.3, dt);
+      // A9: the rates ramp in (smoothstep over NPC_CINE_RAMP_S), so the
+      // first frame leaves the orbit camera's pose almost untouched; it
+      // turned 12 deg when the push-in started at full rate from the feet.
+      c.age += dt;
+      const ru = Math.min(1, c.age / SimpleApp.NPC_CINE_RAMP_S);
+      const ramp = ru * ru * (3 - 2 * ru);
+      expDecayV3(c.pos, desired, 1.5 * ramp, dt);
+      expDecayV3(c.look, desiredLook, 2.1 * ramp, dt);
+      cam.fov = expDecay(cam.fov, c.prevFov - 8, 1.3 * ramp, dt);
       cam.updateProjectionMatrix();
     } else {
       // Release glide (w2 integration): the camera glides ONTO the orbit

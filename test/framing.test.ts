@@ -3,7 +3,21 @@
 // which turned the world into a corridor on half the audience's devices.
 import { describe, expect, test } from 'vitest';
 
-import { BASE_VFOV, framingFov, horizontalFov } from '../Framing';
+import {
+  BASE_VFOV,
+  easeInOutSine,
+  framingFov,
+  horizontalFov,
+  renderedLength,
+  tourCaption,
+  tourFirstLegLift,
+  tourLegDuration,
+  TOUR_CAPTION_MAX,
+  TOUR_DWELL_S,
+  TOUR_LEG_MAX_S,
+  TOUR_LEG_MIN_S,
+  TOUR_PEAK_DEG_S,
+} from '../Framing';
 
 const ASPECTS = {
   portraitPhone: 393 / 852,
@@ -56,5 +70,61 @@ describe('framingFov', () => {
     expect(framingFov(0)).toBe(BASE_VFOV);
     expect(framingFov(-1)).toBe(BASE_VFOV);
     expect(framingFov(NaN)).toBe(BASE_VFOV);
+  });
+});
+
+describe('A9: the tour rail paces itself', () => {
+  test('legs: clamp(1.6 + arc x 0.035, 2.6, 4.2)', () => {
+    expect(tourLegDuration(0)).toBe(TOUR_LEG_MIN_S);
+    expect(tourLegDuration(40)).toBeCloseTo(3.0, 9);
+    expect(tourLegDuration(200)).toBe(TOUR_LEG_MAX_S);
+  });
+
+  test('a leg whose view would peak over 120 deg/s is lengthened past the clamp', () => {
+    // easeInOutSine peaks at pi/2 x the mean rate.
+    const T = tourLegDuration(10, 400);
+    expect(T).toBeGreaterThan(TOUR_LEG_MAX_S);
+    expect(((Math.PI / 2) * 400) / T).toBeCloseTo(TOUR_PEAK_DEG_S, 6);
+    expect(tourLegDuration(10, 90)).toBe(TOUR_LEG_MIN_S); // 54 deg/s peak: no change
+  });
+
+  test('easeInOutSine: 0, 0.5, 1 with flat ends', () => {
+    expect(easeInOutSine(0)).toBe(0);
+    expect(easeInOutSine(0.5)).toBeCloseTo(0.5, 12);
+    expect(easeInOutSine(1)).toBe(1);
+    expect(easeInOutSine(0.01)).toBeLessThan(0.001);
+  });
+
+  test('the first leg rises 3 u over 0.5 s and is level again by landing', () => {
+    expect(tourFirstLegLift(0, 0)).toBe(0);
+    expect(tourFirstLegLift(0.5, 0)).toBeCloseTo(3, 9);
+    expect(tourFirstLegLift(2, 1)).toBe(0);
+  });
+
+  // The legs' arcs (deg round the planet) as measured on the built island at
+  // ?hour=12 (wave-3 A, desktop): the full tour's six legs, the recruiter's four.
+  const FULL = [7.2, 63.6, 78.1, 69.1, 116.6, 78.5];
+  const RECRUIT = [7.2, 63.6, 17.1, 60.8];
+  const total = (arcs: number[]) =>
+    arcs.reduce((sum, a) => sum + tourLegDuration(a), 0) + arcs.length * TOUR_DWELL_S;
+
+  test('the recruiter tour is 29 s or less', () => {
+    expect(total(RECRUIT)).toBeLessThanOrEqual(29);
+  });
+
+  test('the full tour: the dwell is at its 4.0 s floor and the legs keep their clamp', () => {
+    expect(TOUR_DWELL_S).toBe(4.0);
+    const legs = FULL.reduce((sum, a) => sum + tourLegDuration(a), 0);
+    expect(legs).toBeCloseTo(23.05, 1);
+    // 47.0 s: over the 44 s bar, which assumed 2.83 s legs. Recorded, not hidden.
+    expect(total(FULL)).toBeCloseTo(47.05, 1);
+  });
+
+  test("captions: the Professional stop plus 'Stop n of 6 · ' is exactly 110 characters", () => {
+    const pro =
+      'The Professional District — full-stack and AI engineering. Step inside the office for the story.';
+    expect(renderedLength(tourCaption(2, 6, pro))).toBe(110);
+    expect(TOUR_CAPTION_MAX).toBe(110);
+    expect(tourCaption(1, 4, 'x')).toBe('Stop 1 of 4 · x');
   });
 });
