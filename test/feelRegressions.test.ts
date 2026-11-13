@@ -6,7 +6,7 @@
 // next radius change can't quietly re-inflate them.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import { buildCloudFormations } from '../CloudFormations';
 import { SimpleRenderer } from '../SimpleRenderer';
@@ -776,9 +776,12 @@ describe('the world behind a modal on the low tier (E4)', () => {
     );
   });
 
-  // A copy of the loop's arithmetic (no cap on a 60 Hz phone): a rendered
-  // frame costs `cost` s of main thread, a skipped rAF tick costs nothing,
-  // and the next tick comes at the next vsync after the work ends.
+  // Drives SimpleRenderer's own startRenderLoop (wave-3 E review nit: this
+  // used to be a copy of the loop's arithmetic). A bare instance behind an
+  // open modal (past its grace, the divisor on) on a 60 Hz phone with no cap:
+  // a virtual clock feeds rAF, clock.getDelta and performance.now; a rendered
+  // frame's render() costs `cost` s of main thread, a skipped rAF tick costs
+  // nothing, and the next tick comes at the next vsync after the work ends.
   const simulate = (
     cost: number | ((n: number) => number),
     seconds: number,
@@ -786,36 +789,82 @@ describe('the world behind a modal on the low tier (E4)', () => {
     const vsync = 1 / 60;
     const costOf = typeof cost === 'number' ? () => cost : cost;
     let t = 0;
-    let accum = 0;
-    let frame = 0;
-    let last = 0;
-    let before = 0;
+    let prevT = 0;
     let rendered = 0;
     let busy = 0;
     let wall = 0;
-    let prev = 0;
     let lastAt = 0;
+    let didRender = false;
     const gaps: number[] = [];
-    while (t < seconds) {
-      const raw = t - prev;
-      prev = t;
-      accum += raw;
-      if (++frame < 3 || accum < 3 * Math.min(last, before)) {
-        t += vsync;
-        continue;
+    let tick: (() => void) | null = null;
+    const r = Object.create(SimpleRenderer.prototype) as Record<string, unknown>;
+    Object.assign(r, {
+      isRunning: false,
+      clock: {
+        start: () => undefined,
+        getDelta: () => {
+          const d = t - prevT;
+          prevT = t;
+          return d;
+        },
+      },
+      refreshSamples: Number.MAX_SAFE_INTEGER,
+      frameCapFps: 0,
+      frameAccum: 0,
+      modalOpen: true,
+      modalOpenFor: 99,
+      modalApplied: false,
+      modalFrame: 0,
+      lastFrameCpu: 0,
+      prevFrameCpu: 0,
+      applyModal(on: boolean) {
+        this.modalApplied = on;
+        this.modalFrame = 0;
+      },
+      updateAdaptiveResolution: (dt: number) => {
+        wall += dt;
+      },
+      feedCpu: () => undefined,
+      render: () => {
+        didRender = true;
+        gaps.push(t - lastAt);
+        lastAt = t;
+        const c = costOf(rendered);
+        rendered++;
+        busy += c;
+        t += c;
+      },
+    });
+    const g = globalThis as Record<string, unknown>;
+    const saved = { raf: g.requestAnimationFrame, fx: g.__dsFx };
+    const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => t * 1000);
+    g.requestAnimationFrame = (cb: () => void) => {
+      tick = cb;
+      return 1;
+    };
+    g.__dsFx = { modalDivisor: true };
+    try {
+      (r.startRenderLoop as (s: unknown, c: unknown, u: (d: number) => void) => void).call(
+        r,
+        {},
+        {},
+        () => undefined,
+      );
+      // startRenderLoop ran the first tick at t = 0; step to the next vsync.
+      t = vsync;
+      while (t < seconds) {
+        const start = t;
+        didRender = false;
+        (tick as unknown as () => void)();
+        t = start + (didRender ? Math.max(1, Math.ceil((t - start) / vsync - 1e-9)) : 1) * vsync;
       }
-      frame = 0;
-      wall += accum;
-      accum = 0;
-      gaps.push(t - lastAt);
-      lastAt = t;
-      const c = costOf(rendered);
-      rendered++;
-      busy += c;
-      before = last;
-      last = c;
-      t += Math.ceil(c / vsync) * vsync;
+    } finally {
+      nowSpy.mockRestore();
+      g.requestAnimationFrame = saved.raf;
+      if (saved.fx === undefined) delete g.__dsFx;
+      else g.__dsFx = saved.fx;
     }
+    expect(r.modalApplied).toBe(true);
     return { rendered, busy: busy / seconds, wall, gaps };
   };
 
