@@ -9,7 +9,7 @@ import { EnvironmentCycle, EXTERIOR_LIGHTS_DAY_CUTOFF } from './EnvironmentCycle
 import { framingFov } from './Framing';
 import { fx } from './FxBudget';
 import { Island } from './Island';
-import { expDecayV3, squash } from './Juice';
+import { expDecayV3, squash, squashPivot } from './Juice';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
 import * as NpcActivities from './NpcActivities';
@@ -393,6 +393,7 @@ export class GameScene extends THREE.Scene {
   private readonly _waveLook = new THREE.Vector3();
   /** A cat's paws, ~0.12 below its origin (buildCat's leg comment). */
   private static readonly CAT_FEET_Y = -0.12;
+  private readonly _catSquashOff = new THREE.Vector3();
 
   // Cats prowling the grass near the villages: they sit, stroll to a nearby
   // spot, step away if you crowd them, and trot in to eat thrown cat treats.
@@ -4126,7 +4127,8 @@ export class GameScene extends THREE.Scene {
     // shipped without it. The swish and the camera interest stay.
     if (!a11y.reducedMotion) {
       this.player?.triggerFeedToss();
-      if (this.player) squash(this.player, 0.07, 0.16, { pivotY: GameScene.PLAYER_FEET_Y });
+      if (this.player)
+        squash(this.player, 0.07, 0.16, { pivotY: GameScene.PLAYER_FEET_Y, mover: true });
     }
     sfx.toss();
     (this.feedFocusPos ??= new THREE.Vector3()).copy(pilePos);
@@ -4148,7 +4150,8 @@ export class GameScene extends THREE.Scene {
     this.floatCoins(providerPos.clone().addScaledVector(up, 1.0), opts.coins);
     if (!a11y.reducedMotion) {
       this.player?.triggerFeedToss();
-      if (this.player) squash(this.player, 0.06, 0.15, { pivotY: GameScene.PLAYER_FEET_Y });
+      if (this.player)
+        squash(this.player, 0.06, 0.15, { pivotY: GameScene.PLAYER_FEET_Y, mover: true });
       const pops = Math.min(1 + Math.floor(opts.coins / 12), 3);
       for (let k = 0; k < pops; k++) {
         window.setTimeout(
@@ -4175,7 +4178,8 @@ export class GameScene extends THREE.Scene {
   public showEatGesture(): void {
     if (!this.player) return;
     const p = this.player.getWorldPosition();
-    if (!a11y.reducedMotion) squash(this.player, 0.06, 0.15, { pivotY: GameScene.PLAYER_FEET_Y });
+    if (!a11y.reducedMotion)
+      squash(this.player, 0.06, 0.15, { pivotY: GameScene.PLAYER_FEET_Y, mover: true });
     const head = p.clone().addScaledVector(p.clone().normalize(), 1.5);
     this.spawnDust(head, 3);
     this.setInteractionFocus(p, 1.6);
@@ -4868,7 +4872,7 @@ export class GameScene extends THREE.Scene {
             c.analBase = s.radius;
             c.mode = 'eat';
             // A happy little arrival pounce (root scale only, restores exactly)
-            squash(c.cat, 0.16, 0.22, { pivotY: GameScene.CAT_FEET_Y });
+            squash(c.cat, 0.16, 0.22, { pivotY: GameScene.CAT_FEET_Y, mover: true });
           } else {
             c.mode = 'sit';
             c.stateUntil = time + 2 + Math.random() * 4;
@@ -4956,6 +4960,10 @@ export class GameScene extends THREE.Scene {
       if (eatCrouch > 0) c.cat.rotateX(eatCrouch); // nose-down body pitch into the food
       const roll = Math.sin(time * cadence * 0.5 + c.phase) * 0.05 * c.gait;
       if (roll !== 0) c.cat.rotateZ(roll);
+      // The pounce's foot pivot (B4), after this frame's position and
+      // orientation writes: Juice ticks before this loop.
+      const sq = squashPivot(c.cat, this._catSquashOff);
+      if (sq) c.cat.position.add(sq);
     }
   }
 

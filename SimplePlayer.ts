@@ -4,7 +4,7 @@ import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import { a11y } from './Accessibility';
 import { applyCelRim, isCelTheme } from './CelLook';
 import { fx } from './FxBudget';
-import { easeOutBack, tween as juiceTween } from './Juice';
+import { easeOutBack, tween as juiceTween, squashPivot } from './Juice';
 import { Materials } from './Materials';
 import { loadGLTFWithFallbacks, setupModelAnimation } from './utils/GLTFModelLoader';
 
@@ -3630,6 +3630,7 @@ export class SimplePlayer extends THREE.Group {
   /**
    * Update world matrix from position — orients player to stand upright on sphere surface
    */
+  private readonly _squashOff = new THREE.Vector3();
   public updateWorldMatrix(): void {
     this.position.copy(this.playerPosition);
 
@@ -3645,6 +3646,10 @@ export class SimplePlayer extends THREE.Group {
       this.rotation.y = this.yaw;
       this.rotation.x = 0;
     }
+    // A feed-toss or eat squash (B4) scales this group about its feet: add
+    // the foot pivot after the position write, which runs after Juice ticks.
+    const sq = squashPivot(this, this._squashOff);
+    if (sq) this.position.add(sq);
 
     this.updateMatrix();
     this.updateMatrixWorld(true);

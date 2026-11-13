@@ -159,6 +159,11 @@ interface SquashLive {
   /** The pivot offset last added to position, and the position it left. */
   offset: THREE.Vector3;
   wrote: THREE.Vector3;
+  /** The spring's current value and this impulse's pivot, for squashPivot. */
+  s: number;
+  pivotY: number;
+  /** The owner writes position every frame and adds squashPivot itself. */
+  mover: boolean;
 }
 
 const squashLive = new WeakMap<THREE.Object3D, SquashLive>();
@@ -185,13 +190,17 @@ function unpivot(obj: THREE.Object3D, live: SquashLive): void {
  * - `opts.pivotY`: the object's foot height in its own local units (the
  *   player group's feet sit at −0.7). The object is scaled about that point
  *   instead of its origin, so the feet stay planted.
+ * - `opts.mover`: the object's owner rewrites its position every frame
+ *   AFTER Juice ticks (the player group, a cat), which would erase a pivot
+ *   written here. Juice then leaves position alone, and the owner adds
+ *   `squashPivot(obj, out)` right after its own position write.
  * - `dur` is accepted and ignored: the spring sets the length (0.45 s).
  */
 export function squash(
   obj: THREE.Object3D,
   amount = 0.12,
   dur = SQUASH_DUR,
-  opts?: { pivotY?: number },
+  opts?: { pivotY?: number; mover?: boolean },
 ): void {
   void dur;
   let live = squashLive.get(obj);
@@ -202,6 +211,9 @@ export function squash(
       active: false,
       offset: new THREE.Vector3(),
       wrote: new THREE.Vector3(),
+      s: 1,
+      pivotY: 0,
+      mover: false,
     };
     squashLive.set(obj, live);
   } else if (!live.active) {
@@ -211,6 +223,11 @@ export function squash(
   const gen = ++L.gen;
   L.active = true;
   const pivotY = opts?.pivotY ?? 0;
+  if (L.mover || opts?.mover) unpivot(obj, L);
+  L.pivotY = pivotY;
+  L.mover = opts?.mover === true;
+  L.s = 1;
+  const mover = L.mover;
   const reduced = a11y.reducedMotion;
   const b = L.base;
   tween(
@@ -221,7 +238,8 @@ export function squash(
       const s = Math.max(0.25, squashSpring(v * SQUASH_DUR, amount, reduced));
       const inv = 1 / Math.sqrt(s);
       obj.scale.set(b.x * inv, b.y * s, b.z * inv);
-      if (pivotY !== 0) {
+      L.s = s;
+      if (pivotY !== 0 && !mover) {
         unpivot(obj, L);
         // The foot sits at position + up · scale.y · pivotY: hold it still.
         _sqUp.set(0, 1, 0).applyQuaternion(obj.quaternion);
@@ -234,7 +252,23 @@ export function squash(
       if (L.gen !== gen) return;
       obj.scale.copy(b);
       unpivot(obj, L);
+      L.s = 1;
       L.active = false;
     },
   );
+}
+
+/**
+ * The foot-pivot offset of a running `mover` squash, written into `out` (no
+ * allocation): position + this keeps the feet where they were. Null when no
+ * pivoted mover squash runs on `obj`. Read it AFTER the owner's position and
+ * quaternion writes for the frame.
+ */
+export function squashPivot(obj: THREE.Object3D, out: THREE.Vector3): THREE.Vector3 | null {
+  const L = squashLive.get(obj);
+  if (!L || !L.active || !L.mover || L.pivotY === 0 || L.s === 1) return null;
+  return out
+    .set(0, 1, 0)
+    .applyQuaternion(obj.quaternion)
+    .multiplyScalar(L.base.y * (1 - L.s) * L.pivotY);
 }

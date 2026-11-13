@@ -9,7 +9,15 @@
 import * as THREE from 'three';
 import { describe, expect, test } from 'vitest';
 
-import { easeOutBack, expDecay, SQUASH_DUR, squash, squashSpring, tick } from '../Juice';
+import {
+  easeOutBack,
+  expDecay,
+  SQUASH_DUR,
+  squash,
+  squashPivot,
+  squashSpring,
+  tick,
+} from '../Juice';
 
 const DT = 1 / 240;
 
@@ -112,20 +120,46 @@ describe('the squash spring (B4)', () => {
     expect(o.position.distanceTo(new THREE.Vector3(3, 40, -2))).toBeLessThan(1e-9);
   });
 
-  test('pivotY on a mover that rewrites its position every frame', () => {
+  // The app's order (main-simple): Juice ticks first, then the movers write
+  // position and orientation (SimplePlayer.updateWorldMatrix, the cat loop).
+  const tilt = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(-0.2, 1, 0.4).normalize(),
+  );
+  const moverRun = (opts: { pivotY: number; mover?: boolean }, addPivot: boolean): number => {
     const o = new THREE.Object3D();
     const home = new THREE.Vector3(1, 2, 3);
+    const off = new THREE.Vector3();
+    const want = (t: number): THREE.Vector3 =>
+      new THREE.Vector3(0, opts.pivotY, 0)
+        .applyQuaternion(tilt)
+        .add(home)
+        .addScaledVector(new THREE.Vector3(1, 0, 0), t);
     let worst = 0;
-    squash(o, 0.12, 0.16, { pivotY: -0.12 });
-    run(SQUASH_DUR + 0.02, () => {
-      o.position.copy(home); // the next frame's writer
+    squash(o, 0.12, 0.16, opts);
+    run(SQUASH_DUR + 0.02, (t) => {
+      o.position.copy(home).addScaledVector(new THREE.Vector3(1, 0, 0), t); // the mover
+      o.quaternion.copy(tilt);
+      if (addPivot) {
+        const sq = squashPivot(o, off);
+        if (sq) o.position.add(sq);
+      }
       o.updateMatrixWorld(true);
-      tick(0); // the pop lands on top of the fresh position
-      o.updateMatrixWorld(true);
-      const foot = o.localToWorld(new THREE.Vector3(0, -0.12, 0));
-      worst = Math.max(worst, foot.distanceTo(new THREE.Vector3(1, 2 - 0.12, 3)));
+      const foot = o.localToWorld(new THREE.Vector3(0, opts.pivotY, 0));
+      worst = Math.max(worst, foot.distanceTo(want(t)));
     });
-    expect(worst).toBeLessThan(0.005);
+    expect(squashPivot(o, off), 'nothing once the impulse ends').toBeNull();
+    return worst;
+  };
+
+  test('pivotY on a mover, in the app order: the pivot written in the tick is lost', () => {
+    // What B4 shipped first: the sole moves as if scaled about the origin.
+    expect(moverRun({ pivotY: -0.7 }, false)).toBeGreaterThan(0.04);
+  });
+
+  test('pivotY on a mover: squashPivot after the mover write plants the sole', () => {
+    expect(moverRun({ pivotY: -0.7, mover: true }, true)).toBeLessThan(0.005);
+    expect(moverRun({ pivotY: -0.12, mover: true }, true)).toBeLessThan(0.005);
   });
 
   test('the helpers A imports are untouched', () => {
