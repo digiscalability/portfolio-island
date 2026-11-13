@@ -5,7 +5,13 @@ import { a11y } from './Accessibility';
 import { isOwnerVisit, startDwellTracking, track, trackOnce } from './Analytics';
 import { setInkVisible } from './CelLook';
 import { Chat, PROXIMITY_RADIUS } from './Chat';
-import { compassBearing, compassTarget, nearestWithHysteresis, type CompassState } from './Compass';
+import {
+  compassBearing,
+  compassTarget,
+  nearestNeighbourTour,
+  nearestWithHysteresis,
+  type CompassState,
+} from './Compass';
 import { DeliverySystem } from './DeliverySystem';
 import { DISTRICTS } from './Districts';
 import { featuredSell, saleSplit, type ProviderKey } from './economy';
@@ -540,6 +546,15 @@ export class SimpleApp {
   private stepAccum: number = 0;
   private stepAlt: boolean = false;
   private prevWalkPhase: number = -1; // last sampled walk-cycle phase (-1 = stride inactive)
+  /** P2-A6: when E went down during the fishing wait (-1 = not held). */
+  private fishEarlyHoldAt = -1;
+  /** P2-A6: holding E this long during the wait reels in early. */
+  private static readonly FISH_EARLY_REEL_MS = 600;
+  /** P2-A6: a vendor that just sold or sold to you ignores E until then (ms). */
+  private readonly vendorLockUntil = new Map<string, number>();
+  private static readonly VENDOR_LOCK_MS = 1000;
+  /** P2-A6: the shop panel was open last frame (its close locks the kiosk). */
+  private shopWasOpen = false;
   /** A11: when the touch stick reached the rim (-1 = not at the rim). */
   private stickRimSince = -1;
   private static readonly STICK_RUN_MAG = 0.95;
@@ -725,7 +740,15 @@ export class SimpleApp {
       // Assign the full quest chain across the mailboxes (round-robin) and
       // route mailbox interaction through the delivery system
       const mailboxes = this.scene.getMailboxes();
-      this.deliverySystem.assignDestinations(mailboxes);
+      // P2-A6: hand the chain to the mailboxes in a nearest-neighbour tour
+      // from the hub (the Welcome pole), so consecutive parcels are
+      // neighbours. Progress is keyed by delivery id, so saves survive.
+      const hubR = mailboxes[0]?.mesh.position.length() ?? 0;
+      const tour = nearestNeighbourTour(
+        mailboxes.map((m) => m.mesh.position),
+        new THREE.Vector3(0, hubR, 0),
+      );
+      this.deliverySystem.assignDestinations(tour.map((i) => mailboxes[i]));
       this.scene.setOnMailboxInteract((mailbox) => {
         const collected = this.deliverySystem.collectFromMailbox(mailbox);
         if (collected) this.scene.wiggleMailbox(mailbox);
@@ -753,6 +776,12 @@ export class SimpleApp {
         // The visitor chose the courier chain: from now on the pill may point
         // at parcels (after the districts, compassTarget's branch 7).
         this.deliveryOptIn = true;
+        // P2-A6: name where the next parcel waits.
+        const next = this.deliverySystem.getActiveDeliveries()[0]?.destination;
+        const near = next ? this.districtNear(next.mesh.position) : null;
+        if (near) {
+          this.ui.toast(`📬 Delivered. The next parcel waits near ${this.districtLabel(near)}.`);
+        }
         track('delivery_completed', {
           id: d.id,
           count: this.deliverySystem.getCompletedCount(),
@@ -2841,6 +2870,12 @@ export class SimpleApp {
 
     // Any open panel needs the cursor: let go of the opt-in pointer lock.
     if (this.ui.panels.isOpen()) this.inputManager.releasePointerLock();
+    // P2-A6: the kiosk's 1.0 s lock runs from the shop panel's close, and a
+    // finished cast forgets an E held during its wait.
+    const shopOpen = this.ui.panels.isOpen('shop');
+    if (this.shopWasOpen && !shopOpen) this.lockVendor('kiosk');
+    this.shopWasOpen = shopOpen;
+    if (this.fishEarlyHoldAt >= 0 && !this.scene.isFishingActive()) this.fishEarlyHoldAt = -1;
 
     // Only process input once the loader and welcome screen are gone
     if (!this.ui.isWelcomeVisible() && !this.ui.isLoadingVisible()) {
@@ -2990,7 +3025,10 @@ export class SimpleApp {
         this.scene.getOrbitCamera().setMoveInput(vFwd, vStrafe);
         this.currentThrottle = Math.max(Math.abs(vFwd), Math.abs(vStrafe) * 0.5);
         this.applyLook(deltaTime);
-        this.ui.showInteractionPrompt('🚤 Press <strong>E</strong> to hop off');
+        // P2-A6: the glyph of the vehicle being ridden, as the board prompt.
+        const rideKind = this.scene.getActiveVehicleKind();
+        const rideIcon = rideKind === 'jetski' ? '🌊' : rideKind === 'car' ? '🚗' : '⛵';
+        this.ui.showInteractionPrompt(`${rideIcon} Press <strong>E</strong> to hop off`);
         this.maybeHint(
           'ride',
           'Steer with [W] [A] [S] [D]; press [E] to hop off.',
@@ -3207,12 +3245,31 @@ export class SimpleApp {
           this.ui.showInteractionPrompt('🏊 Hold <strong>Space</strong> to swim');
         } else if (this.scene.isFishingActive()) {
           // Line is in the water: reeling outranks every other interaction.
+          // P2-A6: the landing splashes, the bite DIPS the float. Until it
+          // dips, E only says "not yet"; holding E for 0.6 s reels in early.
+          const biting = this.scene.isFishBiting();
           this.ui.showInteractionPrompt(
-            this.scene.isFishBiting()
+            biting
               ? '❗ Press <strong>E</strong> — something is biting!'
-              : '🎣 Press <strong>E</strong> to reel in',
+              : this.ui.isTouchDevice()
+                ? '🎣 Watch the float — tap <strong>👆 USE</strong> when it dips'
+                : '🎣 Watch the float — press <strong>E</strong> when it dips',
           );
-          if (this.inputManager.consumeKeyPress('e')) {
+          const pressed = this.inputManager.consumeKeyPress('e');
+          let reel = biting && pressed;
+          if (!biting) {
+            if (pressed) {
+              this.fishEarlyHoldAt = performance.now();
+              this.ui.flashMessage('Not yet — wait for the float to dip');
+            } else if (this.fishEarlyHoldAt >= 0 && !this.inputManager.isKeyPressed('e')) {
+              this.fishEarlyHoldAt = -1;
+            }
+            reel =
+              this.fishEarlyHoldAt >= 0 &&
+              performance.now() - this.fishEarlyHoldAt >= SimpleApp.FISH_EARLY_REEL_MS;
+          }
+          if (reel) {
+            this.fishEarlyHoldAt = -1;
             if (this.scene.reelLine() === 'fish') {
               this.fishEver = true; // a rung-2 goal (P2-A12)
               this.fishCaught++;
@@ -3361,7 +3418,8 @@ export class SimpleApp {
           this.ui.showInteractionPrompt(
             `${this.featuredStar('canteen')}🥬 Press <strong>E</strong> to sell ${this.produce} produce (+${pEarn} 🪙)${pFull === 0 ? ' · pot brimming' : ''}`,
           );
-          if (this.inputManager.consumeKeyPress('e')) {
+          if (this.vendorPress('canteen')) {
+            this.lockVendor('canteen');
             this.scene.addCoins(pEarn);
             this.scene.logTransaction('Sold produce', pEarn);
             this.dailySold('ds_produce_day', this.produce);
@@ -3419,10 +3477,11 @@ export class SimpleApp {
           this.ui.showInteractionPrompt(
             '🥣 Press <strong>E</strong> to buy soup (3 🪙) — eat with G',
           );
-          if (this.inputManager.consumeKeyPress('e')) {
+          if (this.vendorPress('canteen')) {
             if (!this.scene.spendCoins(SimpleApp.SOUP_PRICE)) {
               this.ui.toast('🪙 Soup is 3 coins.');
             } else {
+              this.lockVendor('canteen');
               this.meals.soup++;
               this.persistMeals();
               this.refreshFeedHud();
@@ -3484,15 +3543,18 @@ export class SimpleApp {
           }
         } else if (
           (buildOpp = this.nearestBuildOpportunity()) !== null &&
-          // A far/unaffordable stake is only an ADVERT — never let it shadow
-          // an actionable tool prompt (the farm's edge stake was eclipsing
-          // "Press E to harvest" for sickle owners standing in the crops).
-          (buildOpp.dist < 3.5 ||
-            !(
-              (this.ownedAxe && this.scene.nearestChoppableTree() !== null) ||
-              (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) ||
-              (this.ownedPickaxe && this.scene.nearestOreNode() !== null)
-            ))
+          // A stake never shadows an actionable tool prompt (the farm's edge
+          // stake was eclipsing "Press E to harvest" for sickle owners
+          // standing in the crops). P2-A6: a near stake no longer escapes
+          // this either, so harvest presses beside the farm stake harvest.
+          !(
+            (this.ownedAxe && this.scene.nearestChoppableTree() !== null) ||
+            (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) ||
+            (this.ownedPickaxe && this.scene.nearestOreNode() !== null)
+          ) &&
+          // Nor a nearer interactable: the courier tour's first mailbox
+          // stands 3-6 u from a bench plot's advert.
+          !(nearby && nearby.distance < buildOpp.dist)
         ) {
           const b = buildOpp;
           if (b.own) {
@@ -3548,7 +3610,7 @@ export class SimpleApp {
           if (this.inputManager.consumeKeyPress('e')) void this.openVault();
         } else if (this.scene.isNearKiosk()) {
           this.ui.showInteractionPrompt('🛒 Press <strong>E</strong> to browse the kiosk');
-          if (this.inputManager.consumeKeyPress('e')) {
+          if (this.vendorPress('kiosk')) {
             sfx.blip();
             this.openShop();
           }
@@ -3561,8 +3623,12 @@ export class SimpleApp {
           if (nearby.type === 'mailbox') {
             // State-aware copy: the glowing mailbox's prompt should CONFIRM
             // "this is the one" — the old generic line never did.
-            text = nearby.mailbox.bubbleText
-              ? esc(nearby.mailbox.bubbleText)
+            // P2-A6: a glowing mailbox names its key before its message.
+            const bubble = nearby.mailbox.bubbleText;
+            text = bubble
+              ? nearby.mailbox.hasDelivery
+                ? `📬 Press <strong>E</strong> — ${esc(bubble.replace(/^📬\s*/u, ''))}`
+                : esc(bubble)
               : nearby.mailbox.hasDelivery
                 ? '📬 Press <strong>E</strong> to collect the delivery'
                 : '📭 Press <strong>E</strong> to check the mailbox';
@@ -4158,6 +4224,25 @@ export class SimpleApp {
     pool.length = n;
     this.compassDistrict = nearestWithHysteresis(this.compassDistrict, pool);
     return this.compassDistrict;
+  }
+
+  /**
+   * P2-A6: the stamp district nearest a point, stamped or not, with no
+   * hysteresis and no compass state (nearestDistrict's pool is the pill's).
+   */
+  private districtNear(pos: THREE.Vector3): string | null {
+    this.zonePos('projects'); // fills zoneList
+    let best: string | null = null;
+    let bestD = Infinity;
+    for (const z of this.zoneList ?? []) {
+      if (this.passport && !this.passport.isStampZone(z.id)) continue;
+      const d = pos.distanceTo(z.pos);
+      if (d < bestD) {
+        bestD = d;
+        best = z.id;
+      }
+    }
+    return best;
   }
 
   private districtLabel(id: string): string {
@@ -5917,6 +6002,21 @@ export class SimpleApp {
    * previous and current sample, accounting for the 1\u21920 wrap. `prev < 0` marks
    * a freshly (re)started stride, so nothing has been crossed yet.
    */
+  /**
+   * P2-A6: after a sale or a purchase, vendor `id` ignores E for 1.0 s, so a
+   * double press never sells and then buys (the canteen) or reopens the shop
+   * just closed (the kiosk).
+   */
+  private lockVendor(id: string): void {
+    this.vendorLockUntil.set(id, performance.now() + SimpleApp.VENDOR_LOCK_MS);
+  }
+
+  /** P2-A6: E pressed at vendor `id` and not swallowed by its lock. */
+  private vendorPress(id: string): boolean {
+    if (!this.inputManager.consumeKeyPress('e')) return false;
+    return performance.now() >= (this.vendorLockUntil.get(id) ?? 0);
+  }
+
   /**
    * A13: may a first-use hint show now? Never under a panel, never indoors,
    * never on a tour, the welcome card or a conversation, and never while
