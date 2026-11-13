@@ -96,7 +96,8 @@
         "npcMotion",
         "coins",
         "worldSeed",
-        "interiorRoom"
+        "interiorRoom",
+        "raceGate"
       ],
       "testFiles": ["test/fixtures/gameSceneSeed.json"]
     },
