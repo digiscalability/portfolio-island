@@ -927,7 +927,7 @@ export class SimpleUI {
     if (parseFloat(cs.opacity) < 0.05) {
       const fading =
         typeof g.getAnimations === 'function' &&
-        g.getAnimations().some((a) => a.playState === 'running' || a.playState === 'pending');
+        g.getAnimations().some((a) => a.playState === 'running' || a.pending);
       if (!fading) return null;
     }
     const r = g.getBoundingClientRect();
