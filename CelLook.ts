@@ -292,10 +292,15 @@ export function setCanopyTimeSource(u: { value: number }): void {
   canopyTimeSrc = u;
 }
 
-/** The amplitude scale: 0 with the switch off, 0.5 under reduced motion, else 1. */
-const canopyAmpScale = (): number => (fx.on('canopySway') ? (a11y.reducedMotion ? 0.5 : 1) : 0);
-/** Bound once; timed under 'canopySway' with ?perf=1. */
-const canopyAmpNow = (): number => fx.time('canopySway', canopyAmpScale);
+/**
+ * The amplitude scale: 0 with the switch off, 0.5 under reduced motion, else 1.
+ * NOT wrapped in fx.time: the sway is shader-only and this switch read is its
+ * only CPU, which plan-r3's ledger holds at 0 µs. The getter runs at every
+ * uniform upload (several times a frame), so a stopwatch here measured its own
+ * clock reads (4.4 µs desktop, 1.3 µs low tier under ?perf=1) and failed the
+ * 0 µs line; untimed, perf-gate reads the row n/a, as its ledger comment says.
+ */
+const canopyAmpNow = (): number => (fx.on('canopySway') ? (a11y.reducedMotion ? 0.5 : 1) : 0);
 
 /** One uniform set shared by every sway program; read at upload. */
 const canopyUniforms = {

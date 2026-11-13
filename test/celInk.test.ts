@@ -13,6 +13,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { describe, expect, test, vi } from 'vitest';
 
 import { a11y } from '../Accessibility';
+import { fx } from '../FxBudget';
 import {
   addFleetHull,
   addGroupHulls,
@@ -461,5 +462,34 @@ describe('C9: canopy sway, outlines attached', () => {
     const [full] = canopySwayOffset(1, 1.1, 0.4, 1);
     const [half] = canopySwayOffset(1, 1.1, 0.4, 0.5);
     expect(half).toBeCloseTo(full / 2, 12);
+  });
+
+  test('the amplitude read costs 0 FxBudget µs: no fx.time, even with ?perf=1', () => {
+    // perf-gate's ledger holds canopySway at 0 µs (shader-only). The uniform
+    // getter runs at every upload, so a stopwatch around it measured its own
+    // clock reads (4.4 µs/frame desktop) and failed that line.
+    const g = boxGroup(1);
+    addGroupHulls(g);
+    const ink = hullOf(g.children[0]).material as THREE.Material;
+    const shader = {
+      uniforms: {} as Record<string, { value: number }>,
+      vertexShader: 'void main() {}',
+      fragmentShader: '',
+    };
+    ink.onBeforeCompile(
+      shader as unknown as THREE.WebGLProgramParametersWithUniforms,
+      {} as THREE.WebGLRenderer,
+    );
+    const g2 = globalThis as unknown as { __dsFx?: { stats?: Record<string, unknown> } };
+    const timeSpy = vi.spyOn(fx, 'time');
+    fx.setPerf(true);
+    try {
+      for (let i = 0; i < 50; i++) void shader.uniforms.uCanopyAmp.value;
+      expect(timeSpy).not.toHaveBeenCalled();
+      expect(g2.__dsFx?.stats?.canopySway).toBeUndefined();
+    } finally {
+      fx.setPerf(null);
+      timeSpy.mockRestore();
+    }
   });
 });
