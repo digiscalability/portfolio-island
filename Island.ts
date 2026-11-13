@@ -3192,8 +3192,8 @@ export class Island {
       {
         name: 'Island Explorer',
         dialogue: [
-          'Have you found all five zones yet?',
-          'The compass at the top points to your next delivery.',
+          'Have you found every district yet?',
+          'The compass at the top points to where you are headed next.',
           'Press E near a glowing mailbox to collect!',
         ],
       },
@@ -3210,7 +3210,7 @@ export class Island {
         dialogue: [
           'Fresh ideas, get your fresh ideas here!',
           'Special today: one-of-a-kind digital experiences.',
-          'Browse the Project Portfolio zone for the full catalogue.',
+          'Browse the Project Portfolio district for the full catalogue.',
         ],
       },
       {
@@ -3304,9 +3304,9 @@ export class Island {
       {
         name: 'Cartographer',
         dialogue: [
-          'Five zones, twenty buildings, one sphere.',
+          'One sphere, and a district for every chapter.',
           'The Welcome Hub is at the north pole.',
-          'Everything else sits along the equator belt.',
+          'The other districts ring it on the slopes below.',
         ],
       },
       {
@@ -3401,7 +3401,7 @@ export class Island {
         name: 'Nurse',
         dialogue: [
           'Checkups are ten coins and worth every one — sixty seconds of spring in your step.',
-          'Drowning costs five. Swimming lessons are free: hold Space.',
+          'Drowning costs five. Swimming lessons are free: hold jump to stay afloat.',
           'The sea patrol fishes out more visitors than you would think.',
         ],
       },

@@ -1966,3 +1966,66 @@ describe('the bulbs glow at night (P2-E5, ruling 2026-11-13)', () => {
     expect(update).not.toMatch(/new THREE\.(PointLight|SpotLight|Mesh\w*Material)/);
   });
 });
+
+describe('villager lines tell the island as it is (p2/copy, C carry-over)', () => {
+  /** Every string in Island.ts's NPC_PERSONALITIES, as written. */
+  const villagerLines = (): string[] => {
+    const p = parse('Island.ts');
+    let found: ts.Node | null = null;
+    const find = (n: ts.Node): void => {
+      if (found) return;
+      if (
+        ts.isVariableDeclaration(n) &&
+        ts.isIdentifier(n.name) &&
+        n.name.text === 'NPC_PERSONALITIES'
+      )
+        found = n;
+      else ts.forEachChild(n, find);
+    };
+    find(p.sf);
+    expect(found).not.toBeNull();
+    const out: string[] = [];
+    const walk = (n: ts.Node): void => {
+      if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) out.push(n.text);
+      ts.forEachChild(n, walk);
+    };
+    walk(found as unknown as ts.Node);
+    return out;
+  };
+
+  test('no wrong fact, banned word or typed count (the p2/copy fact rules)', () => {
+    const lines = villagerLines();
+    expect(lines.length).toBeGreaterThan(60);
+    // The same list as tools/ux-probes/p2/guidance.cjs FACT_RULES.
+    const rules = [
+      /five zones/i,
+      /equator belt/i,
+      /next delivery/i,
+      /Project Portfolio zone/i,
+      /\b5 districts\b/i,
+      /\bagents?\b/i,
+      /live AI/i,
+      /\b(two dozen|dozens of)\b/i,
+    ];
+    const bad = lines.filter((l) => rules.some((re) => re.test(l)));
+    expect(bad).toEqual([]);
+    // The districts sit at ZONE_LAT (about 27 degrees), not on the equator,
+    // and no line types how many there are.
+    expect(
+      lines.filter((l) => /\b(five|5|twenty|20)\s+(zones|districts|buildings)\b/i.test(l)),
+    ).toEqual([]);
+  });
+
+  test('no keyboard key a phone cannot press, after touchifyPlain', () => {
+    // touchifyPlain rewrites 'press E/G/Q'; any other key name must not be typed.
+    const keys = [
+      /\bWASD\b/,
+      /\bSpace\b/,
+      /\bPress P\b/i,
+      /(^|[\s(,;])E to\b/,
+      /\(M\)/,
+      /\bpress (F|M|C)\b/i,
+    ];
+    expect(villagerLines().filter((l) => keys.some((re) => re.test(l)))).toEqual([]);
+  });
+});
