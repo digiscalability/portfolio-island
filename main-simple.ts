@@ -482,7 +482,7 @@ export class SimpleApp {
     ],
     [
       'fish',
-      '🎣 Lesson 2 — buy the rod at the shop, stand at any shore, E to cast. Reel when the float dips.',
+      '🎣 Lesson 2 — buy the rod at the shop, stand at any shore, press E to cast. Reel when the float dips.',
     ],
     [
       'chop',
@@ -494,7 +494,7 @@ export class SimpleApp {
     ],
     [
       'chat',
-      '💬 Lesson 5 — walk up to any villager and press E. Two dozen of them will really talk with you.',
+      '💬 Lesson 5 — walk up to any villager and press E. Most of them will really talk with you.',
     ],
     [
       'build',

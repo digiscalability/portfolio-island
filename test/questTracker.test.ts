@@ -439,3 +439,44 @@ describe('main-simple: the Compass set toast waits out the guide card (wave-3 ca
     expect(toast).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('main-simple: School lessons read right on a phone (wave-3 p2/copy carry-over)', () => {
+  type Lesson = [string, string];
+  let lessons: Lesson[] = [];
+  let touchifyPlain: (t: string) => string = (t) => t;
+  beforeAll(async () => {
+    const mod = await import('../main-simple');
+    lessons = (mod.SimpleApp as unknown as { LESSONS: Lesson[] }).LESSONS;
+    const ui = await import('../SimpleUI');
+    const plain = (ui.SimpleUI.prototype as unknown as Record<string, Fn>).touchifyPlain;
+    touchifyPlain = (t) => plain.call({ isTouch: true }, t) as string;
+  }, 120000);
+
+  /** What the toast says on a touch device: lessonCopy, then the toast's touchifyPlain. */
+  const onPhone = (l: Lesson): string =>
+    touchifyPlain(proto.lessonCopy.call({ ui: { isTouchDevice: () => true } }, l) as string);
+  const onDesktop = (l: Lesson): string =>
+    proto.lessonCopy.call({ ui: { isTouchDevice: () => false } }, l) as string;
+
+  test('no lesson names a keyboard key on a phone', () => {
+    expect(lessons.length).toBe(6);
+    for (const l of lessons) {
+      const said = onPhone(l);
+      expect(said, l[0]).not.toMatch(
+        /\bWASD\b|\bSpace\b|\bShift\b|\b[Pp]ress [A-Z]\b|(^|[\s,])[A-Z] to\b/,
+      );
+    }
+    expect(onPhone(lessons.find(([id]) => id === 'fish') as Lesson)).toContain(
+      'tap 👆 USE to cast',
+    );
+    expect(onPhone(lessons.find(([id]) => id === 'chat') as Lesson)).toContain('tap 👆 USE');
+  });
+
+  test('the desktop copy keeps its keys, and no lesson types a villager count', () => {
+    expect(onDesktop(lessons.find(([id]) => id === 'fish') as Lesson)).toContain('press E to cast');
+    for (const l of lessons) {
+      expect(l[1]).not.toMatch(/\b(two|three|four|five|six) dozen\b|\bdozen\b/i);
+      expect(l[1]).not.toMatch(/\d+\s+(of them|villagers)/i);
+    }
+  });
+});
