@@ -85,15 +85,26 @@ async function toShore(page, k0 = 0) {
     return p ? p.toArray() : null;
   });
   if (!fp) throw new Error('hook missing: scene.fishermanPos()');
-  for (let k = k0; k < k0 + 24; k++) {
+  // 12 headings x 5 distances: a villager who wanders up takes the prompt
+  // (talk outranks the cast), so a spot is kept only while it shows 'cast'.
+  for (let k = k0; k < k0 + 60; k++) {
     const ang = ((k % 12) / 12) * Math.PI * 2;
-    const dist = [2.5, 4, 6][Math.floor(k / 12) % 3];
+    const dist = [2.5, 4, 6, 8, 10][Math.floor(k / 12) % 5];
     await page.evaluate(STAND, { p: fp, dist, ang });
     await lib.sleep(700);
     const st = await page.evaluate(FISH);
     if (st.canCast && /cast/i.test((await prompt(page)) || '')) return { k, dist, ang: +ang.toFixed(2) };
   }
   return null;
+}
+
+/** Stand at a known spot again; when its prompt is no longer the cast's, find another. */
+async function reShore(page, sp) {
+  const fp = await page.evaluate(() => window.__app.scene.fishermanPos().toArray());
+  await page.evaluate(STAND, { p: fp, dist: sp.dist, ang: sp.ang });
+  await lib.sleep(600);
+  if (/cast/i.test((await prompt(page)) || '')) return sp;
+  return (await toShore(page, sp.k + 1)) || (await toShore(page, 0));
 }
 
 /** Cast, and wait for the float to land in the water (the 'wait' phase). */
@@ -144,8 +155,7 @@ async function fishing(t) {
     t.check(`${prof}: the wait prompt says neither reel nor splash`, out.waitPrompt === null ? null : !/reel|splash/i.test(out.waitPrompt), out.waitPrompt, "no 'reel', no 'splash' (58c8849: 'Press E to reel in')");
     await untilIdle(page);
     // 2. A 0.6 s E hold during the wait reels early (A's P2-A6 contract).
-    await page.evaluate(STAND, { p: await page.evaluate(() => window.__app.scene.fishermanPos().toArray()), dist: out.shore.dist, ang: out.shore.ang });
-    await lib.sleep(400);
+    out.shore = (await reShore(page, out.shore)) || out.shore;
     const c2 = await cast(page, touch, T);
     let hold = null;
     if (c2.landedMs !== null && !touch) {
@@ -161,8 +171,7 @@ async function fishing(t) {
     t.check(`${prof}: a 0.6 s E hold in the wait reels the line in`, hold ? !hold.activeAt650ms : null, hold || (touch ? 'keyboard only' : 'no wait phase'), 'line out within 0.65 s');
     await untilIdle(page);
     // 3. The bite: when it comes and what the prompt says.
-    await page.evaluate(STAND, { p: await page.evaluate(() => window.__app.scene.fishermanPos().toArray()), dist: out.shore.dist, ang: out.shore.ang });
-    await lib.sleep(400);
+    out.shore = (await reShore(page, out.shore)) || out.shore;
     const c3 = await cast(page, touch, T);
     let bite = null;
     const t3 = Date.now();
@@ -253,7 +262,7 @@ async function gather(t) {
       }
     }
     out.presses = presses;
-    t.check(`${prof}: 4 harvest presses beside the farm's stake harvest`, presses.length ? presses.filter((p) => p.harvested).length === 4 : null, presses.length ? `${presses.filter((p) => p.harvested).length}/4 (panels: ${presses.map((p) => p.panel).join(',')})` : 'no stake-and-crop spot found', '4/4 (58c8849: 3/4, one opened the build chooser)');
+    t.check(`${prof}: 4 harvest presses beside the farm's stake harvest`, presses.length ? presses.filter((p) => p.harvested).length === 4 : null, presses.length ? `${presses.filter((p) => p.harvested).length}/4 (panels: ${presses.map((p) => p.panel).join(',')})` : 'no stake-and-crop spot found', "4/4 (58c8849: 0/4 at spots where a stake under 3.5 u and a ripe crop are both in reach; the audit's 1 of 4 was four presses across the farm)");
     // 2. At a stake with no tool action, E opens the chooser.
     if (g.stakeOnly && g.stakeOnly.length) {
       const sp = g.stakeOnly[0];
@@ -318,19 +327,25 @@ const FLOAT_VS_AVATAR = () => {
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
+  // The avatar's own posed vertices (a skinned mesh's bind-pose bounds are far
+  // wider than the pose), sampled to at most ~300 a mesh; the rod and the
+  // line are left out (they are not the avatar's body).
+  const skip = new Set([sc.playerRod, sc.fishLine].filter(Boolean));
+  const tmp = new V();
   sc.getPlayer().traverse((m) => {
-    if (!m.isMesh || !m.geometry || !m.visible) return;
-    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
-    const bb = m.geometry.boundingBox;
-    for (const x of [bb.min.x, bb.max.x])
-      for (const y of [bb.min.y, bb.max.y])
-        for (const z of [bb.min.z, bb.max.z]) {
-          const v = new V(x, y, z).applyMatrix4(m.matrixWorld).project(cam);
-          minX = Math.min(minX, v.x);
-          maxX = Math.max(maxX, v.x);
-          minY = Math.min(minY, v.y);
-          maxY = Math.max(maxY, v.y);
-        }
+    if (!m.isMesh || !m.geometry || !m.visible || !m.geometry.attributes.position) return;
+    for (let o = m; o; o = o.parent) if (skip.has(o)) return;
+    const a = m.geometry.attributes.position;
+    const step = Math.max(1, Math.floor(a.count / 300));
+    for (let i = 0; i < a.count; i += step) {
+      if (m.isSkinnedMesh) m.getVertexPosition(i, tmp);
+      else tmp.fromBufferAttribute(a, i);
+      const v = tmp.applyMatrix4(m.matrixWorld).project(cam);
+      minX = Math.min(minX, v.x);
+      maxX = Math.max(maxX, v.x);
+      minY = Math.min(minY, v.y);
+      maxY = Math.max(maxY, v.y);
+    }
   });
   const f = b.getWorldPosition(new V()).project(cam);
   const W = innerWidth;
@@ -338,18 +353,26 @@ const FLOAT_VS_AVATAR = () => {
   const px = (x, y) => [Math.round(((x + 1) / 2) * W), Math.round(((1 - y) / 2) * H)];
   const inside = f.x >= minX && f.x <= maxX && f.y >= minY && f.y <= maxY;
   const onScreen = f.z < 1 && Math.abs(f.x) <= 1 && Math.abs(f.y) <= 1;
-  // The '!' sprite (wave 3, B): any visible Sprite within 1.5 u above the float.
-  let bang = null;
+  // Sprites over the float (within 1.6 u, radially above it). The '!' (wave
+  // 3, B) is one that is there at the bite and was not during the wait: the
+  // caller diffs two of these lists (a lamp's glow sprite is there in both).
+  const near = [];
   const bp = b.getWorldPosition(new V());
   sc.traverseVisible((o) => {
-    if (bang || !o.isSprite) return;
+    if (!o.isSprite) return;
     const w = o.getWorldPosition(new V());
-    if (w.distanceTo(bp) < 1.6 && w.length() > bp.length()) bang = true;
+    if (w.distanceTo(bp) < 1.6 && w.length() > bp.length()) near.push(o.uuid);
   });
-  return { float: px(f.x, f.y), avatar: [...px(minX, maxY), ...px(maxX, minY)], inside, onScreen, bang };
+  return { float: px(f.x, f.y), avatar: [...px(minX, maxY), ...px(maxX, minY)], inside, onScreen, near };
 };
 
-/** The chase camera behind the avatar's visual forward (+Z), settled. */
+/**
+ * The chase camera settled behind the avatar's visual forward (+Z): the view
+ * of a visitor who walked up to the shore. (Settling it along the cast line
+ * instead puts the float behind the avatar in nearly every cast: 1 of 8 clear
+ * on desktop, 0 on the phone, on both baselines; too adversarial to compare
+ * with the audit's 3 of 8 inside.)
+ */
 const BEHIND = () => {
   const sc = window.__app.scene;
   const pl = sc.getPlayer();
@@ -363,6 +386,41 @@ const BEHIND = () => {
   if (oc.snapToPlayer) oc.snapToPlayer();
   return true;
 };
+
+/** Point the chase camera at the nearest open water (16 bearings, 6 u out), so a step forward faces the sea. */
+const AIM_WATER = () => {
+  const sc = window.__app.scene;
+  const isl = sc.getIsland();
+  const p = sc.getPlayer().getWorldPosition();
+  const up = p.clone().normalize();
+  const ref = Math.abs(up.y) < 0.9 ? p.clone().set(0, 1, 0) : p.clone().set(1, 0, 0);
+  const e1 = ref.addScaledVector(up, -ref.dot(up)).normalize();
+  for (const reach of [4, 6, 8, 11]) {
+    for (let k = 0; k < 16; k++) {
+      const t = e1.clone().applyAxisAngle(up, (k / 16) * Math.PI * 2);
+      const cand = up.clone().add(t.clone().multiplyScalar(reach / isl.getRadius())).normalize();
+      if (isl.isOverWater(cand)) {
+        const oc = sc.getOrbitCamera();
+        if (oc.followDir) oc.followDir.copy(t).negate();
+        oc.yawVelocity = 0;
+        if (oc.snapToPlayer) oc.snapToPlayer();
+        return { reach, k };
+      }
+    }
+  }
+  return null;
+};
+
+/** Face the water like a visitor who walked to the shore: aim, one short step, settle. */
+async function faceWater(page) {
+  const a = await page.evaluate(AIM_WATER);
+  if (!a) return null;
+  await page.keyboard.down('w');
+  await lib.sleep(120);
+  await page.keyboard.up('w');
+  await lib.sleep(500);
+  return a;
+}
 
 async function bobber(t) {
   const hours = String(t.args.hours || '12,18,21').split(',').map(Number);
@@ -383,7 +441,13 @@ async function bobber(t) {
     // behind the avatar's facing (the view a visitor who walked up has).
     for (let c = 0; c < 8 && spots.length; c++) {
       const sp = spots[c % spots.length];
-      await page.evaluate(STAND, { p: fp, dist: sp.dist, ang: sp.ang });
+      const sp2 = await reShore(page, sp);
+      if (sp2) Object.assign(sp, sp2);
+      await faceWater(page);
+      if (!/cast/i.test((await prompt(page)) || '')) {
+        const sp3 = await reShore(page, sp);
+        if (sp3) Object.assign(sp, sp3);
+      }
       await page.evaluate(BEHIND);
       await lib.sleep(500);
       const r = await cast(page, touch, T);
@@ -398,18 +462,24 @@ async function bobber(t) {
       await untilIdle(page, 4000);
     }
     const judged = out.casts.filter((c) => c.float);
-    const clear = judged.filter((c) => !c.inside && c.onScreen).length;
-    t.check(`${prof}: the float clears the avatar's box in 7 of 8 casts`, judged.length >= 8 ? clear >= 7 : null, `${clear}/${judged.length}`, '>= 7/8 (58c8849: hidden in 3 of 8)');
+    // Clear = not inside the avatar's projected box; a float off the edge of
+    // the screen is counted apart (it is not hidden by the avatar, nor seen).
+    const clear = judged.filter((c) => !c.inside).length;
+    const off = judged.filter((c) => !c.onScreen).length;
+    t.check(`${prof}: the float clears the avatar's box in 7 of 8 casts`, judged.length >= 8 ? clear >= 7 : null, `${clear}/${judged.length} (off screen: ${off})`, '>= 7/8 (the audit, 58c8849: inside the box in 3 of 8)');
     // The bite at each hour, with its screenshot ('!' sprite where the build has it).
     const env = await page.evaluate(() => 'debugHour' in window.__app.scene.getEnvironmentCycle());
     for (const h of hours) {
       if (env) await page.evaluate((hh) => (window.__app.scene.getEnvironmentCycle().debugHour = hh), h);
       await lib.sleep(800);
       if (!spots.length) continue;
-      await page.evaluate(STAND, { p: fp, dist: spots[0].dist, ang: spots[0].ang });
+      if (!(await reShore(page, spots[0]))) continue;
+      await faceWater(page);
       await page.evaluate(BEHIND);
       await lib.sleep(500);
       const c0 = await cast(page, touch, T);
+      await lib.sleep(300);
+      const waiting = await page.evaluate(FLOAT_VS_AVATAR);
       let got = null;
       while (Date.now() - c0.t0 < 15000) {
         if ((await page.evaluate(FISH)).biting) {
@@ -418,6 +488,11 @@ async function bobber(t) {
           break;
         }
         await lib.sleep(60);
+      }
+      if (got) {
+        const before = new Set((waiting && waiting.near) || []);
+        const fresh = got.near.filter((u) => !before.has(u));
+        got.bang = fresh.length ? true : null;
       }
       out.bites[h] = got;
       await page.evaluate(() => {
@@ -570,7 +645,8 @@ const VISIT = () => {
 
 async function tour(t) {
   for (const prof of t.profiles(['desktop', 'phone'])) {
-    const { page, touch, T } = await start(t, prof, { init: [R.REWARD_INIT] });
+    // No REWARD_INIT here: the fourth stamp's celebration is what this reads.
+    const { page, touch, T } = await start(t, prof);
     await R.install(page);
     const out = { stops: [] };
     const t0 = Date.now();
