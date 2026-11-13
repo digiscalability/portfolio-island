@@ -559,6 +559,7 @@ describe('the recruiter path in one click (D5)', () => {
       'Leaderboard',
       'Guestbook',
       'Island',
+      'Your', // P2-D10: 'Your visit', the visit's summary
       'Controls', // D8: the Controls & settings sheet, under the tiles
     ]);
     const filled = [...document.querySelectorAll<HTMLElement>('[role="dialog"] button')].filter(

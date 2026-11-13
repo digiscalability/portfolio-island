@@ -1311,6 +1311,16 @@ html.reduced-motion #ld-orbit {
   color: #c5cfdd;
   font-size: 13px;
 }
+.ds-controls-todo-done {
+  flex: none;
+  color: #4ade80;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ds-controls-todo li[data-done] strong {
+  color: #c5cfdd;
+}
 .ds-controls-todo button {
   flex: none;
   min-height: 44px;

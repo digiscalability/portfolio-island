@@ -3,7 +3,7 @@ import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import type { BoardRead } from './Boards';
 import { VOICE_MAX_MS } from './Chat';
 import { DISTRICTS } from './Districts';
-import { GUIDE_KEY, GUIDE_STEPS, type GuideStep } from './Guide';
+import { GUIDE_KEY, GUIDE_STEPS, type GoalsSummary, type GuideStep } from './Guide';
 import { checkName, safePeerName } from './Moderation';
 import { ACTIVITY_DEFS } from './NpcActivities';
 import { AI_NPCS, routeQuestion, type QuestionRoute } from './NpcChat';
@@ -24,6 +24,12 @@ import { DS } from './ui/tokens';
 import { WORLD_ERA } from './WorldScale';
 import { EVENT_META } from './WorldState';
 import type { NoticeState, NpcPlan } from './WorldState';
+
+/** What 'ds:goals' carries (main-simple.publishGoals, P2-A12): the ladder,
+ *  and the visit's numbers for the crown's summary (P2-D10). */
+type VisitGoals = GoalsSummary & {
+  visit?: { stamps: number; villagers: number; coins: number; secrets: number; minutes: number };
+};
 
 /**
  * Haptics on? The settings sheet's switch (ds_haptics: '1' on, '0' off)
@@ -1999,11 +2005,27 @@ export class SimpleUI {
     if (typeof window === 'undefined') return;
     window.addEventListener('ds:guide', this.onGuideEvent);
     window.addEventListener('ds:intro', this.onIntroEvent);
+    // The ladder and the visit's numbers (P2-D10), kept from boot: main-simple
+    // publishes in the same task as it opens the crown's card.
+    window.addEventListener('ds:goals', this.onGoalsEvent);
     // Capture: a press inside a modal marks the next outcome as its own,
     // whatever the control does with the event afterwards.
     for (const type of ['pointerdown', 'keydown', 'click'] as const) {
       this.overlay.addEventListener(type, this.onPanelAction, true);
     }
+  }
+
+  /** The latest 'ds:goals' detail (P2-D10); null until main-simple sends one
+   *  (it never does without a Next chip). */
+  private goals: VisitGoals | null = null;
+  private readonly onGoalsEvent = (e: Event): void => {
+    const d = (e as CustomEvent<VisitGoals | null>).detail;
+    if (d && Array.isArray(d.goals)) this.goals = d;
+  };
+
+  /** The latest 'ds:goals' detail, for tests and probes. */
+  getGoals(): VisitGoals | null {
+    return this.goals;
   }
 
   private readonly onGuideEvent = (e: Event): void => {
@@ -2208,8 +2230,15 @@ export class SimpleUI {
          You explored every zone of the island. The <strong>Founder's Golden Crown</strong>
          is now yours — and equipped. Thanks for taking the full tour.</p>`,
     );
+    // Your visit, from the latest 'ds:goals' (P2-D10). Without one the block
+    // stays out and the button falls back to 'Keep exploring'.
+    const goals = this.goals;
+    if (goals?.visit) modal.appendChild(this.visitSummaryBlock(goals.visit));
+    const next = goals?.next ?? null;
     const cta = document.createElement('button');
-    cta.textContent = 'Wear it with pride →';
+    cta.type = 'button';
+    cta.dataset.crownNext = next ? next.id : '';
+    cta.textContent = next ? `Next: ${next.label} →` : 'Keep exploring →';
     Object.assign(cta.style, {
       padding: '11px 22px',
       borderRadius: '10px',
@@ -2223,6 +2252,9 @@ export class SimpleUI {
     cta.addEventListener('click', () => {
       modal.remove();
       this.panels.notifyClosed('passport-complete');
+      // The crown leads somewhere: the ladder's next goal, through the seam
+      // every 'Show me' uses.
+      if (next) this.guideTo(next.guideKey, 'crown');
     });
     modal.appendChild(cta);
     // The single highest-intent share moment in the app — the visitor just
@@ -2239,6 +2271,100 @@ export class SimpleUI {
     );
     modal.appendChild(shareRow);
     trackOnce('passport_complete');
+    this.overlay.appendChild(modal);
+  }
+
+  /**
+   * 'Your visit' (P2-D10): districts stamped, villagers talked to, coins
+   * earned, secrets found and minutes on the island, from the visit field
+   * of 'ds:goals'. Numbers only, built with textContent.
+   */
+  private visitSummaryBlock(v: VisitGoals['visit']): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'ds-visit';
+    box.dataset.visit = '1';
+    Object.assign(box.style, { margin: '0 0 16px', textAlign: 'left' });
+    const h = document.createElement('h3');
+    h.textContent = 'Your visit';
+    h.className = 'ds-caption';
+    Object.assign(h.style, {
+      margin: '0 0 8px',
+      fontSize: '11px',
+      fontWeight: '700',
+      letterSpacing: '0.08em',
+      textTransform: 'uppercase',
+      color: '#9fb0c8',
+    });
+    box.appendChild(h);
+    const dl = document.createElement('dl');
+    Object.assign(dl.style, {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))',
+      gap: '8px',
+      margin: '0',
+    });
+    const n = (x: unknown): number =>
+      typeof x === 'number' && Number.isFinite(x) ? Math.max(0, Math.round(x)) : 0;
+    const rows: Array<[string, string, number]> = [
+      ['stamps', 'Districts stamped', n(v?.stamps)],
+      ['villagers', 'Villagers talked to', n(v?.villagers)],
+      ['coins', 'Coins earned', n(v?.coins)],
+      ['secrets', 'Secrets found', n(v?.secrets)],
+      ['minutes', 'Minutes here', n(v?.minutes)],
+    ];
+    for (const [id, label, value] of rows) {
+      const cell = document.createElement('div');
+      cell.dataset.visitStat = id;
+      Object.assign(cell.style, {
+        display: 'flex',
+        flexDirection: 'column-reverse',
+        padding: '8px 6px',
+        borderRadius: '10px',
+        background: 'rgba(255,255,255,0.05)',
+        border: '1px solid rgba(255,255,255,0.1)',
+      });
+      const dt = document.createElement('dt');
+      dt.textContent = label;
+      Object.assign(dt.style, { fontSize: '12px', color: '#c3cede' });
+      const dd = document.createElement('dd');
+      dd.textContent = String(value);
+      Object.assign(dd.style, { margin: '0', fontSize: '20px', fontWeight: '700', color: '#fff' });
+      cell.append(dt, dd);
+      dl.appendChild(cell);
+    }
+    box.appendChild(dl);
+    return box;
+  }
+
+  /** The Portfolio menu's 'Your visit' row (P2-D10): the summary on its own.
+   *  Before any 'ds:goals' it shows the passport's count and zeros. */
+  showVisitSummary(): void {
+    const modal = this.buildCenteredModal('min(380px, calc(100vw - 32px))', 'visit');
+    const title = document.createElement('h2');
+    title.textContent = 'Your visit';
+    Object.assign(title.style, { margin: '0 0 12px', color: '#8a9bff' });
+    modal.appendChild(title);
+    const visit = this.goals?.visit ?? {
+      stamps: this.passport?.count() ?? 0,
+      villagers: 0,
+      coins: 0,
+      secrets: 0,
+      minutes: 0,
+    };
+    const block = this.visitSummaryBlock(visit);
+    block.querySelector('h3')?.remove();
+    modal.appendChild(block);
+    const shareRow = document.createElement('div');
+    shareRow.appendChild(
+      this.makeShareButton('📣 Share the island', {
+        surface: 'visit_summary',
+        url: buildShareUrl(),
+        title: 'DigiScalability Life Island',
+        text: 'A 3D portfolio island you can walk around — take the tour:',
+      }),
+    );
+    modal.appendChild(shareRow);
+    trackOnce('visit_summary_opened');
     this.overlay.appendChild(modal);
   }
 
@@ -4805,6 +4931,7 @@ export class SimpleUI {
           <button data-board="guestbook" style="${tile}">✍️ Guestbook</button>
           <button data-board="times" style="${tile}">📰 Island Times</button>
         </div>
+        <button data-visit style="${tile}display:block;width:100%;margin-top:8px;">🧭 Your visit</button>
         <button data-controls style="${tile}display:block;width:100%;margin-top:8px;">⌨️ Controls &amp; settings</button>
       </div>`;
 
@@ -4849,6 +4976,10 @@ export class SimpleUI {
     menu.querySelector('button[data-controls]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
       this.showControls('menu');
+    });
+    menu.querySelector('button[data-visit]')?.addEventListener('click', () => {
+      this.togglePortfolioMenu();
+      this.showVisitSummary();
     });
     menu.querySelector('button[data-journal]')?.addEventListener('click', () => {
       this.togglePortfolioMenu();
@@ -5003,6 +5134,37 @@ export class SimpleUI {
     ];
   }
 
+  /**
+   * The Things to do rows. Once 'ds:goals' has fired they are the ladder's
+   * goals in ladder order (P2-D10), each with the static row's icon and how
+   * where one shares its key; the static rows stay as the fallback.
+   */
+  private todoRows(): Array<{
+    icon: string;
+    title: string;
+    how: string;
+    key?: string;
+    done?: boolean;
+  }> {
+    const fixed = this.thingsToDo();
+    const goals = this.goals?.goals;
+    if (!goals || goals.length === 0) return fixed;
+    const byKey = new Map(fixed.filter((r) => r.key).map((r) => [r.key as string, r]));
+    const esc = (s: string): string => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    return goals.map((g) => {
+      const zone = g.id.startsWith('stamp:') ? g.id.slice('stamp:'.length) : null;
+      const meta = zone ? (PASSPORT_META as Record<string, { icon: string }>)[zone] : undefined;
+      const same = byKey.get(g.guideKey);
+      return {
+        icon: meta?.icon ?? same?.icon ?? '⭐',
+        title: esc(g.label),
+        how: zone ? 'Walk into its hall to stamp your passport.' : (same?.how ?? ''),
+        key: g.guideKey,
+        done: g.done,
+      };
+    });
+  }
+
   /** Write a setting and tell the input layer (SimpleInputManager re-reads
    *  its three look keys on 'ds:settings'). */
   private writeSetting(key: string, value: string): void {
@@ -5071,7 +5233,7 @@ export class SimpleUI {
       `<dl class="ds-controls-rows">${list
         .map(([what, how]) => `<div><dt>${what}</dt><dd>${how}</dd></div>`)
         .join('')}</dl>`;
-    const todo = this.thingsToDo();
+    const todo = this.todoRows();
     const tabs: Array<[typeof tab, string]> = [
       ['controls', 'Controls'],
       ['todo', 'Things to do'],
@@ -5108,11 +5270,13 @@ export class SimpleUI {
            ${todo
              .map(
                (it) =>
-                 `<li><span class="ds-controls-todo-text"><strong>${it.icon} ${it.title}</strong>
-                    <span>${it.how}</span></span>${
-                      it.key
-                        ? `<button type="button" data-show-me="${it.key}" aria-label="Show me: ${it.title}">Show me</button>`
-                        : ''
+                 `<li${it.done ? ' data-done="1"' : ''}><span class="ds-controls-todo-text"><strong>${it.icon} ${it.title}</strong>
+                    ${it.how ? `<span>${it.how}</span>` : ''}</span>${
+                      it.done
+                        ? '<span class="ds-controls-todo-done">✓ Done</span>'
+                        : it.key
+                          ? `<button type="button" data-show-me="${it.key}" aria-label="Show me: ${it.title}">Show me</button>`
+                          : ''
                     }</li>`,
              )
              .join('')}
@@ -10492,6 +10656,7 @@ export class SimpleUI {
     this.stopMessages();
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
+    window.removeEventListener('ds:goals', this.onGoalsEvent);
     window.removeEventListener('keydown', this.onControlsKey);
     document.removeEventListener('keydown', this.onInputKey, true);
     document.removeEventListener('pointerdown', this.onInputPointer, true);
