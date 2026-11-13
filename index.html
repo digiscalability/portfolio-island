@@ -2,27 +2,18 @@
 <html lang="en-AU">
   <head>
     <meta charset="UTF-8" />
-    <!-- Fonts matching the mood: bold display and hand-drawn dialogue.
-         Preconnect first: this is the only third-party request on the critical
-         path, and without the handshake head-start it delays first paint of
-         the loading screen on cold mobile connections. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Non-blocking load: preload-as-style flips to a stylesheet onload, so a
-         slow fonts CDN can no longer delay first paint of the loading screen
-         (both fonts already use display=swap — fallbacks render instantly). -->
+    <!-- Fonts (D12): both faces are self-hosted under /fonts (SIL OFL 1.1,
+         see CREDITS.md), so the page makes no third-party font request. Bebas
+         Neue (the display face) is preloaded for the loader title; Patrick
+         Hand is not: the first speech bubble fetches it. The @font-face rules
+         are in the inline <style> below. -->
     <link
       rel="preload"
-      as="style"
-      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Patrick+Hand&display=swap"
-      onload="this.onload=null;this.rel='stylesheet'"
+      as="font"
+      type="font/woff2"
+      href="/fonts/bebas-neue-latin.woff2"
+      crossorigin
     />
-    <noscript>
-      <link
-        href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Patrick+Hand&display=swap"
-        rel="stylesheet"
-      />
-    </noscript>
     <!-- favicon.ico for clients that never ask for SVG (and the bare
          /favicon.ico request every browser makes); sizes="32x32" stops Chrome
          preferring it over the SVG. -->
@@ -113,7 +104,10 @@
               "addressRegion": "VIC",
               "addressCountry": "AU"
             },
-            "sameAs": ["https://www.linkedin.com/in/-abbas-ali", "https://github.com/digiscalability"]
+            "sameAs": [
+              "https://www.linkedin.com/in/-abbas-ali",
+              "https://github.com/digiscalability"
+            ]
           },
           {
             "@type": "CreativeWork",
@@ -153,6 +147,44 @@
       </style>
     </noscript>
     <style>
+      /* D12: the two web faces, self-hosted. The family names are exactly
+         'Bebas Neue' and 'Patrick Hand' (SignPainter.SIGN_FONT_FAMILY and the
+         speech bubble load them by name). */
+      @font-face {
+        font-family: 'Bebas Neue';
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url('/fonts/bebas-neue-latin.woff2') format('woff2');
+      }
+      @font-face {
+        font-family: 'Patrick Hand';
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+        src: url('/fonts/patrick-hand-latin.woff2') format('woff2');
+      }
+      /* Metric-matched stand-ins while Bebas Neue swaps in: a local Arial
+         Narrow, else Arial, scaled so a title keeps Bebas Neue's width and
+         line box (measured with fontTools on the woff2 and arial.ttf: caps
+         run 0.591 of Arial's advance; Arial Narrow is 0.82 of Arial's).
+         No layout shift when the real face lands. */
+      @font-face {
+        font-family: 'Bebas Neue Fallback';
+        src: local('Arial Narrow'), local('ArialNarrow');
+        size-adjust: 72.1%;
+        ascent-override: 124.8%;
+        descent-override: 41.6%;
+        line-gap-override: 0%;
+      }
+      @font-face {
+        font-family: 'Bebas Neue Fallback Arial';
+        src: local('Arial'), local('ArialMT');
+        size-adjust: 59.1%;
+        ascent-override: 152.3%;
+        descent-override: 50.8%;
+        line-gap-override: 0%;
+      }
       :root {
         --bg-gradient-start: #667eea;
         --bg-gradient-end: #764ba2;
@@ -164,8 +196,13 @@
         --primary: #5b6cff;
         --primary-hover: #4350d8;
         --radius: 18px;
-        --font-display: 'Bebas Neue', sans-serif;
-        --font-body: 'Patrick Hand', cursive;
+        --font-display:
+          'Bebas Neue', 'Bebas Neue Fallback', 'Bebas Neue Fallback Arial', sans-serif;
+        /* The UI face is the system's own (Inter is dropped). Patrick Hand is
+           for speech bubbles only, never for body text. */
+        --font-ui:
+          system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        --font-body: var(--font-ui);
       }
 
       * {
@@ -273,7 +310,7 @@
         margin-top: 22px;
         padding: 12px 14px;
         color: #9cc4ff;
-        font-size: 16px;
+        font-size: 17px;
         text-decoration: underline;
         text-underline-offset: 3px;
       }
@@ -324,13 +361,13 @@
 
       #welcome-modal h1 {
         font-family: var(--font-display);
-        font-size: 36px;
+        font-size: 40px;
         color: var(--text-dark);
         margin-bottom: 20px;
       }
 
       #welcome-modal p {
-        font-size: 18px;
+        font-size: 17px;
         color: var(--text-dark);
         margin-bottom: 30px;
         line-height: 1.6;
@@ -389,7 +426,7 @@
       }
 
       #quest-tracker p {
-        font-size: 16px;
+        font-size: 17px;
         margin: 5px 0;
       }
 
@@ -433,15 +470,15 @@
           -apple-system,
           'Segoe UI',
           sans-serif;
-        font-size: 16px;
+        font-size: 17px;
         line-height: 1.55;
         text-align: center;
       }
       .bf-card h1 {
-        font-family: 'Bebas Neue', system-ui, sans-serif;
+        font-family: var(--font-display);
         font-weight: 400;
         letter-spacing: 1px;
-        font-size: 46px;
+        font-size: 48px;
         line-height: 1.05;
         margin: 0;
       }
@@ -457,7 +494,7 @@
       }
       .bf-note {
         color: #9fb0c6;
-        font-size: 14.5px;
+        font-size: 15px;
         margin: 0 0 18px;
       }
       .bf-nojs {
@@ -523,7 +560,7 @@
         padding: 0;
         margin: 0 0 22px;
         text-align: left;
-        font-size: 14.5px;
+        font-size: 15px;
         color: #c9d5e4;
       }
       .bf-work li {
@@ -546,7 +583,7 @@
       }
       .bf-foot {
         margin: 18px 0 0;
-        font-size: 12.5px;
+        font-size: 13px;
         color: #8a9bb3;
         line-height: 1.6;
       }
@@ -581,7 +618,7 @@
           Claude Haiku 4.5.
         </p>
         <div class="loading-spinner"></div>
-        <p id="load-phase" style="margin-top: 10px; font-size: 12.5px; opacity: 0.6">
+        <p id="load-phase" style="margin-top: 10px; font-size: 13px; opacity: 0.6">
           Preparing the crossing…
         </p>
         <a id="ls-quick" href="/hire.html">Quick version: experience and contact, no 3D</a>
@@ -617,9 +654,7 @@
             <li><a href="https://digiscalability.com/about">CV</a></li>
             <li><a href="https://github.com/digiscalability/portfolio-island">Code</a></li>
           </ul>
-          <p class="bf-email">
-            Email <span class="bf-addr">admin@digiscalability.com</span>
-          </p>
+          <p class="bf-email">Email <span class="bf-addr">admin@digiscalability.com</span></p>
           <h2>Selected work</h2>
           <ul class="bf-work">
             <li>

@@ -23,11 +23,16 @@ under CC0 1.0 (public domain); models by [Quaternius](https://quaternius.com).
 
 ## Fonts
 
-Loaded from Google Fonts at runtime, not stored in this repo, both under the
-SIL Open Font License 1.1:
+Self-hosted in `public/fonts/` (the Latin subsets, as WOFF2, taken from the
+Fontsource 5.2.5 packages of the Google Fonts releases), both under the SIL
+Open Font License 1.1, whose text ships beside them as `public/fonts/OFL.txt`:
 
-- Bebas Neue by Ryoichi Tsunekawa
-- Patrick Hand by Patrick Wagesreiter
+- Bebas Neue by Ryoichi Tsunekawa (`bebas-neue-latin.woff2`)
+- Patrick Hand by Patrick Wagesreiter (`patrick-hand-latin.woff2`)
+
+The page makes no request to Google Fonts. While Bebas Neue loads, titles
+use a local Arial Narrow or Arial scaled to its metrics ('Bebas Neue
+Fallback'); nothing from those system fonts is redistributed.
 
 ## Sound and voice
 

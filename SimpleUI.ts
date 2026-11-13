@@ -158,7 +158,7 @@ export interface JournalData {
  * font sizes, which is exactly how it drifted into the screenshotted mess.
  * Height is FIXED (30px + 38px row pitch = 8px gutters) so the column reads
  * as one designed unit; fontFamily is deliberately absent — the overlay's
- * Inter cascades (see createOverlay).
+ * system UI stack cascades (see createOverlay).
  */
 const CHIP: Partial<CSSStyleDeclaration> = {
   position: 'absolute',
@@ -425,7 +425,7 @@ export class SimpleUI {
       color: 'white',
       padding: '20px',
       textAlign: 'center',
-      fontSize: '14.5px',
+      fontSize: '15px',
       width: 'min(500px, calc(100vw - 24px))',
       boxSizing: 'border-box',
     });
@@ -647,7 +647,9 @@ export class SimpleUI {
       zIndex: '1000',
       // Match the site's own stack (style.css) — the old 'Arial' here
       // overrode it for every HUD child and read dated next to system-ui.
-      fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
+      // D12: the system UI stack (index.html's --font-ui); Inter is dropped.
+      fontFamily:
+        "var(--font-ui, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif)",
     });
     // Safe-area insets published as inheriting custom properties so every
     // edge-anchored HUD child can offset itself off notches / home
@@ -1140,7 +1142,7 @@ export class SimpleUI {
       justifyContent: 'center',
       background: 'rgba(0, 0, 0, 0.55)',
       borderRadius: '10px',
-      fontSize: '18px',
+      fontSize: '17px',
       color: '#fff',
       cursor: 'pointer',
       pointerEvents: 'auto',
@@ -1341,11 +1343,11 @@ export class SimpleUI {
     const modal = this.buildCenteredModal('min(92vw, 520px)', 'island-map');
     const title = document.createElement('h2');
     title.textContent = '🗺️ Island map';
-    Object.assign(title.style, { margin: '0 0 8px', color: '#8a9bff', fontSize: '18px' });
+    Object.assign(title.style, { margin: '0 0 8px', color: '#8a9bff', fontSize: '17px' });
     modal.appendChild(title);
     const hint = document.createElement('p');
     hint.textContent = 'Tap anything to set your compass to it.';
-    Object.assign(hint.style, { margin: '0 0 10px', fontSize: '12.5px', color: '#aab' });
+    Object.assign(hint.style, { margin: '0 0 10px', fontSize: '13px', color: '#aab' });
     modal.appendChild(hint);
 
     // Height-aware: width-only sizing produced a 430px disc on a 375px-tall
@@ -2124,7 +2126,7 @@ export class SimpleUI {
           background: 'rgba(28,34,52,0.97)',
           border: '1px solid rgba(143,193,255,0.35)',
           color: '#fff',
-          fontSize: '13.5px',
+          fontSize: '14px',
           lineHeight: '1.35',
           textAlign: 'center',
           zIndex: '1',
@@ -2403,7 +2405,7 @@ export class SimpleUI {
       color: '#fff',
       padding: '11px 16px',
       borderRadius: '12px',
-      fontSize: '13.5px',
+      fontSize: '14px',
       lineHeight: '1.4',
       textAlign: 'center',
       fontFamily: 'system-ui, sans-serif',
@@ -2434,9 +2436,9 @@ export class SimpleUI {
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px 8px;
         border-radius:12px;border:2px ${done ? 'solid #12b76a' : 'dashed rgba(255,255,255,0.2)'};
         background:${done ? 'rgba(18,183,106,0.12)' : 'rgba(255,255,255,0.03)'};">
-        <span style="font-size:26px;filter:${done ? 'none' : 'grayscale(1)'};opacity:${done ? '1' : '0.5'};">${meta.icon}</span>
+        <span style="font-size:24px;filter:${done ? 'none' : 'grayscale(1)'};opacity:${done ? '1' : '0.5'};">${meta.icon}</span>
         <span style="font-size:12px;">${meta.label}</span>
-        <span style="font-size:11px;color:${done ? '#4ade80' : '#7d8ea6'};">${done ? '✓ Stamped' : 'Not yet'}</span>
+        <span style="font-size:12px;color:${done ? '#4ade80' : '#7d8ea6'};">${done ? '✓ Stamped' : 'Not yet'}</span>
       </div>`;
     }).join('');
     const complete = !!pp?.isComplete();
@@ -2464,7 +2466,7 @@ export class SimpleUI {
     modal.style.border = '1px solid rgba(255,213,74,0.55)';
     modal.insertAdjacentHTML(
       'beforeend',
-      `<div style="font-size:52px;line-height:1;">👑</div>
+      `<div style="font-size:48px;line-height:1;">👑</div>
        <h2 style="margin:10px 0 6px;color:#ffd54a;">Portfolio complete!</h2>
        <p style="margin:0 0 18px;font-size:15px;line-height:1.5;">
          You explored every zone of the island. The <strong>Founder's Golden Crown</strong>
@@ -2529,7 +2531,7 @@ export class SimpleUI {
     h.className = 'ds-caption';
     Object.assign(h.style, {
       margin: '0 0 8px',
-      fontSize: '11px',
+      fontSize: '12px',
       fontWeight: '700',
       letterSpacing: '0.08em',
       textTransform: 'uppercase',
@@ -2708,18 +2710,18 @@ export class SimpleUI {
           .map((e) => {
             const gain = e.amount > 0;
             const amt = `${gain ? '+' : '−'}${Math.abs(e.amount)} 🪙`;
-            return `<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 2px;border-top:1px solid rgba(255,255,255,0.08);font-size:13.5px;">
+            return `<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 2px;border-top:1px solid rgba(255,255,255,0.08);font-size:14px;">
               <span style="opacity:.9">${esc(e.label)}</span>
               <span style="white-space:nowrap"><strong style="color:${gain ? '#7fe08a' : '#ff9a7a'}">${amt}</strong>
-                <span style="opacity:.5;font-size:11.5px;margin-left:8px">${ago(e.t)}</span></span>
+                <span style="opacity:.5;font-size:12px;margin-left:8px">${ago(e.t)}</span></span>
             </div>`;
           })
           .join('')
       : '<div style="opacity:.6;font-size:13px;padding:14px 0">No coin activity yet — sell, race, or run an errand.</div>';
     const h = document.createElement('div');
-    h.innerHTML = `<div style="font-size:26px">📜</div>
+    h.innerHTML = `<div style="font-size:24px">📜</div>
       <div style="font-weight:600;margin:6px 0 2px">Coin history</div>
-      <div style="opacity:.7;font-size:12.5px;margin-bottom:8px">Your last ${entries.length} transactions</div>
+      <div style="opacity:.7;font-size:13px;margin-bottom:8px">Your last ${entries.length} transactions</div>
       <div style="text-align:left;max-height:min(50vh,320px);overflow-y:auto">${rows}</div>`;
     modal.appendChild(h);
     this.overlay.appendChild(modal);
@@ -2863,7 +2865,7 @@ export class SimpleUI {
       border: '1px solid rgba(120,160,255,0.45)',
       background: 'rgba(80,130,255,0.18)',
       color: '#cfe0ff',
-      fontSize: '13.5px',
+      fontSize: '14px',
       fontWeight: '600',
       cursor: 'pointer',
     });
@@ -3156,7 +3158,7 @@ export class SimpleUI {
            ? `Your run: <strong style="color:#ffd54a;">${fmt(playerTimeMs)}</strong>`
            : 'Global top times'
        }</p>
-       <p id="rlb-status" role="status" style="margin:0 0 10px;font-size:13.5px;line-height:1.4;color:#dfe6ff;">${
+       <p id="rlb-status" role="status" style="margin:0 0 10px;font-size:14px;line-height:1.4;color:#dfe6ff;">${
          playerTimeMs != null ? 'Saving your time…' : 'Loading…'
        }</p>
        <div id="rlb-body" style="text-align:left;"></div>`,
@@ -3503,7 +3505,7 @@ export class SimpleUI {
     // hand-authored flavour text instead of a nightly agent pipeline.
     modal.insertAdjacentHTML(
       'beforeend',
-      `<p style="margin:14px 0 0;font-size:11px;color:#788;font-style:italic;">
+      `<p style="margin:14px 0 0;font-size:12px;color:#788;font-style:italic;">
         Compiled nightly by the island's AI analyst · daily jobs assigned by the AI town planner</p>`,
     );
     trackOnce('island_times_opened');
@@ -3760,7 +3762,7 @@ export class SimpleUI {
           border: '1px solid rgba(255,255,255,0.2)',
           background: 'rgba(12,12,20,0.9)',
           color: '#fff',
-          fontSize: '16px', // match the input: no iOS zoom, bigger tap targets
+          fontSize: '17px', // match the input: no iOS zoom, bigger tap targets
           cursor: 'pointer',
         });
         // pointerdown + preventDefault: fire before the input's blur→close and
@@ -3938,7 +3940,7 @@ export class SimpleUI {
     const stampRow = data.stamps
       .map(
         (s) =>
-          `<span title="${s.label}" style="font-size:22px;${s.has ? '' : 'filter:grayscale(1);opacity:0.35;'}">${s.icon}</span>`,
+          `<span title="${s.label}" style="font-size:20px;${s.has ? '' : 'filter:grayscale(1);opacity:0.35;'}">${s.icon}</span>`,
       )
       .join(' ');
     const hatRow = data.hats
@@ -3960,7 +3962,7 @@ export class SimpleUI {
     modal.insertAdjacentHTML(
       'beforeend',
       `<h2 style="margin:0 0 2px;color:#8a9bff;">📔 Island Journal</h2>
-       <p style="margin:0 0 10px;font-size:12.5px;color:#aab;">Everything you've found so far — and what's still out there.</p>
+       <p style="margin:0 0 10px;font-size:13px;color:#aab;">Everything you've found so far — and what's still out there.</p>
        ${meter('🛂 Zone stamps', data.stamps.filter((s) => s.has).length, data.stamps.length)}
        <div style="margin:6px 0 2px;">${stampRow}</div>
        ${meter('🎩 Hats collected', data.hats.filter((h) => h.owned).length, data.hats.length)}
@@ -3983,7 +3985,7 @@ export class SimpleUI {
               ${data.loops
                 .map(
                   (l) =>
-                    `<div style="display:flex;gap:8px;margin:5px 0;font-size:12.5px;line-height:1.45;">
+                    `<div style="display:flex;gap:8px;margin:5px 0;font-size:13px;line-height:1.45;">
                        <span style="font-size:15px;">${l.icon}</span>
                        <span><strong style="color:#dfe6ff;">${l.title}</strong> — <span style="color:#9ab;">${l.detail}</span></span></div>`,
                 )
@@ -4063,7 +4065,7 @@ export class SimpleUI {
          <span style="font-size:20px;width:24px;text-align:center;">${E(r.icon)}</span>
          <span style="flex:1;text-align:left;font-size:13px;">
            <strong style="color:#dfe6ff;">${E(r.label)}</strong>
-           <span style="display:block;color:#9ab;font-size:11.5px;line-height:1.35;">${E(r.hint)}</span>
+           <span style="display:block;color:#9ab;font-size:12px;line-height:1.35;">${E(r.hint)}</span>
          </span>
          <span style="color:${r.count > 0 ? '#8a9bff' : '#667'};font-weight:700;font-size:15px;
            min-width:2.2em;text-align:right;">${r.count}</span>
@@ -4081,7 +4083,7 @@ export class SimpleUI {
     const toolStrip = data.tools
       .map(
         (t) =>
-          `<span title="${SimpleUI.esc(t.name)}" style="font-size:22px;${t.owned ? '' : 'filter:grayscale(1);opacity:0.35;'}">${SimpleUI.esc(t.icon)}</span>`,
+          `<span title="${SimpleUI.esc(t.name)}" style="font-size:20px;${t.owned ? '' : 'filter:grayscale(1);opacity:0.35;'}">${SimpleUI.esc(t.icon)}</span>`,
       )
       .join(' ');
 
@@ -4090,7 +4092,7 @@ export class SimpleUI {
     modal.insertAdjacentHTML(
       'beforeend',
       `<h2 style="margin:0 0 2px;color:#8a9bff;">🎒 Your Pack</h2>
-       <p style="margin:0 0 8px;font-size:12.5px;color:#aab;">Everything you're carrying right now.</p>
+       <p style="margin:0 0 8px;font-size:13px;color:#aab;">Everything you're carrying right now.</p>
        <div style="display:flex;justify-content:center;gap:8px;margin:0 0 4px;">
          <span style="background:#3a341acc;border:1px solid #b39b3a;border-radius:999px;
            padding:4px 12px;font-size:13px;color:#ffd54a;font-weight:700;">🪙 ${data.coins}</span>
@@ -4110,7 +4112,7 @@ export class SimpleUI {
                   border-radius:10px;padding:6px 10px;">
                   <span style="font-size:20px;">${E(data.carrying.icon)}</span>
                   <span style="flex:1;font-size:13px;"><strong style="color:#dfe6ff;">${E(data.carrying.label)}</strong>
-                    <span style="display:block;color:#9ab;font-size:11.5px;">${E(data.carrying.hint)}</span></span>
+                    <span style="display:block;color:#9ab;font-size:12px;">${E(data.carrying.hint)}</span></span>
                 </div>`
              : ''
          }
@@ -4182,8 +4184,8 @@ export class SimpleUI {
       `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
          <div style="font-size:17px;font-weight:700;">🔨 Raise a structure</div>
          <div style="display:flex;gap:8px;align-items:center;">
-           <span style="background:#3a2f1acc;border:1px solid #8a6238;border-radius:999px;padding:3px 10px;font-size:12.5px;">🪵 ${wallet.timber}</span>
-           <span style="background:#3a341acc;border:1px solid #b39b3a;border-radius:999px;padding:3px 10px;font-size:12.5px;">🪙 ${wallet.coins}</span>
+           <span style="background:#3a2f1acc;border:1px solid #8a6238;border-radius:999px;padding:3px 10px;font-size:13px;">🪵 ${wallet.timber}</span>
+           <span style="background:#3a341acc;border:1px solid #b39b3a;border-radius:999px;padding:3px 10px;font-size:13px;">🪙 ${wallet.coins}</span>
          </div>
        </div>
        <div id="chooser-rows">
@@ -4191,7 +4193,7 @@ export class SimpleUI {
          .map(
            (r) => `
          <div style="display:flex;align-items:center;gap:11px;min-height:44px;padding:7px 4px;border-bottom:1px solid rgba(255,255,255,0.07);${r.affordable ? '' : 'opacity:0.62;'}">
-           <span style="font-size:22px;">${r.icon}</span>
+           <span style="font-size:20px;">${r.icon}</span>
            <span style="flex:1;">
              <strong style="text-transform:capitalize;">${r.name}</strong>
              <span style="display:block;font-size:12px;color:${r.affordable ? '#9ab' : '#e0a0a0'};">
@@ -4231,7 +4233,7 @@ export class SimpleUI {
     modal.insertAdjacentHTML(
       'beforeend',
       `<div style="font-size:17px;font-weight:700;margin-bottom:4px;">${build.icon} Your ${build.name}</div>
-       <div style="font-size:12.5px;color:#9ab;margin-bottom:14px;">Reclaim returns the timber — the carpenter keeps the coins as his labour fee.</div>
+       <div style="font-size:13px;color:#9ab;margin-bottom:14px;">Reclaim returns the timber — the carpenter keeps the coins as his labour fee.</div>
        <button id="build-reclaim" style="display:block;width:100%;margin:6px 0;padding:11px;background:#3a2f1a;color:#ffe9c9;border:1px solid #8a6238;border-radius:10px;font-size:14px;cursor:pointer;">🪵 Reclaim timber (+${build.timber} 🪵)</button>
        <button id="build-replace" style="display:block;width:100%;margin:6px 0;padding:11px;background:#26263a;color:#cfe0ff;border:1px solid rgba(120,160,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">🔨 Replace with something else…</button>
        <button id="build-cancel" style="display:block;width:100%;margin:6px 0;padding:9px;background:none;color:#889;border:none;font-size:13px;cursor:pointer;">Leave it standing</button>`,
@@ -4702,7 +4704,7 @@ export class SimpleUI {
       color: '#fff',
       padding: '13px 22px',
       borderRadius: '14px',
-      fontSize: '15.5px',
+      fontSize: '15px',
       lineHeight: '1.45',
       textAlign: 'center',
       fontFamily: 'system-ui, sans-serif',
@@ -4829,9 +4831,9 @@ export class SimpleUI {
        <textarea id="sh-msg" aria-label="Your note" maxlength="200" rows="3" placeholder="Hi Abbas! 👋" style="${field}resize:none;"></textarea>
        <input id="sh-email" aria-label="Your email, only if you'd like a reply (optional)" autocomplete="email" maxlength="80" type="email" placeholder="Email — only if you'd like a reply (optional)" style="${field}" />
        <button id="sh-send" class="ds-press" style="width:100%;padding:11px;border:none;border-radius:10px;margin-top:2px;
-         background:${DS.primary};color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;">Send 👋</button>
+         background:${DS.primary};color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send 👋</button>
        <p id="sh-error" role="alert" hidden style="margin:8px 0 0;font-size:13px;line-height:1.4;color:#ffb4a8;"></p>
-       <p style="margin:9px 0 0;font-size:11px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
+       <p style="margin:9px 0 0;font-size:12px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
     );
     this.overlay.appendChild(modal);
     trackOnce('say_hi_opened');
@@ -4993,7 +4995,7 @@ export class SimpleUI {
              background:${it.done ? 'rgba(18,183,106,0.10)' : 'rgba(255,255,255,0.03)'};margin:4px 0;text-align:left;">
              <span style="font-size:15px;line-height:1.3;">${it.done ? '✅' : '⬜'}</span>
              <div style="flex:1;">
-               <div style="font-size:13.5px;font-weight:600;color:${it.done ? '#9fd8b8' : '#e8edf5'};">${it.icon} ${this.escapeHtml(it.label)}</div>
+               <div style="font-size:14px;font-weight:600;color:${it.done ? '#9fd8b8' : '#e8edf5'};">${it.icon} ${this.escapeHtml(it.label)}</div>
                ${it.done ? '' : `<div style="font-size:12px;color:#93a;color:#8fa0b8;margin-top:1px;">${this.escapeHtml(this.touchifyPlain(it.hint))}</div>`}
              </div>
            </div>`,
@@ -5043,7 +5045,7 @@ export class SimpleUI {
     });
     modal.insertAdjacentHTML(
       'beforeend',
-      `<h2 style="margin:0 0 10px;color:#8a9bff;font-size:18px;">📸 Your island shot</h2>
+      `<h2 style="margin:0 0 10px;color:#8a9bff;font-size:17px;">📸 Your island shot</h2>
        <img src="${this.photoUrl}" alt="Island photo" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`,
     );
     const row = document.createElement('div');
@@ -5058,7 +5060,7 @@ export class SimpleUI {
       border: '1px solid rgba(120,160,255,0.45)',
       background: 'rgba(80,130,255,0.18)',
       color: '#cfe0ff',
-      fontSize: '13.5px',
+      fontSize: '14px',
       fontWeight: '600',
       cursor: 'pointer',
     });
@@ -5086,7 +5088,7 @@ export class SimpleUI {
       border: '1px solid rgba(255,255,255,0.25)',
       background: 'rgba(255,255,255,0.08)',
       color: '#fff',
-      fontSize: '13.5px',
+      fontSize: '14px',
       fontWeight: '600',
       textDecoration: 'none',
     });
@@ -5223,7 +5225,7 @@ export class SimpleUI {
         : `<span>Passport ${pp.count()}/${pp.total()}</span>`
       : '<span>Passport</span>';
     const tile =
-      'display:flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:13.5px;cursor:pointer;';
+      'display:flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;';
     // The group headers take the 11 px uppercase caption class (D13).
     const group = 'margin:14px 0 2px;text-align:left;';
     menu.innerHTML = `
@@ -6357,22 +6359,22 @@ export class SimpleUI {
                    border-radius:50%;background:#cfe4f7;box-shadow:0 0 10px rgba(160,200,240,0.8);"></div>
             </div>
           </div>
-          <div style="font-family:'Bebas Neue',system-ui,sans-serif;font-size:min(48px,12vw);line-height:1.05;letter-spacing:1.5px;">
+          <div style="font-family:var(--font-display, 'Bebas Neue', sans-serif);font-size:min(48px,12vw);line-height:1.05;letter-spacing:1.5px;">
             DIGISCALABILITY LIFE ISLAND</div>
-          <div style="color:#a9bdd4;font-size:12.5px;margin-top:6px;max-width:290px;">
+          <div style="color:#a9bdd4;font-size:13px;margin-top:6px;max-width:290px;">
             Abbas Ali's hand-built 3D portfolio — a living 3D world where
             ${Object.keys(AI_NPCS).length} villagers talk through Claude Haiku 4.5.</div>
-          <div id="ld-msg" style="color:#8fa6bd;font-size:12.5px;margin:8px 0 16px;min-height:16px;"></div>
+          <div id="ld-msg" style="color:#8fa6bd;font-size:13px;margin:8px 0 16px;min-height:16px;"></div>
           <div style="width:230px;height:7px;background:rgba(255,255,255,0.12);border-radius:6px;overflow:hidden;">
             <div id="ld-bar" style="width:0%;height:100%;border-radius:6px;
                  background:linear-gradient(90deg,#4CAF50,#7fd18b);transition:width 0.35s ease;"></div>
           </div>
-          <div id="ld-pct" style="color:#6e8298;font-size:11px;margin-top:8px;">0%</div>
+          <div id="ld-pct" style="color:#6e8298;font-size:12px;margin-top:8px;">0%</div>
           ${
             document.getElementById('boot-fallback')
               ? `<button id="ld-skip" type="button" style="margin-top:18px;padding:10px 16px;border-radius:999px;
                   border:1px solid rgba(255,255,255,0.22);background:rgba(255,255,255,0.06);color:#cfe0ff;
-                  font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;">Quick version (no 3D) →</button>`
+                  font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;">Quick version (no 3D) →</button>`
               : ''
           }
         </div>`;
@@ -6707,7 +6709,7 @@ export class SimpleUI {
     // The title is the page's h1 (axe: no level-one heading), sized as the
     // h2 it replaced.
     this.welcomeDiv.innerHTML = returning
-      ? `<h1 style="margin: 0 0 12px 0; font-size: 1.5em; color: #4CAF50;">👋 Welcome back!</h1>
+      ? `<h1 style="margin: 0 0 12px 0; font-family: var(--font-display, 'Bebas Neue', sans-serif); font-weight: 400; font-size: 40px; line-height: 1.05; letter-spacing: 0.5px; color: #4CAF50;">👋 Welcome back!</h1>
          ${progressHtml}
          ${awayHtml}
          ${recruiterPill}
@@ -6715,14 +6717,14 @@ export class SimpleUI {
          ${exploreBtn}
          ${controlsStrip}`
       : `
-      <h1 style="margin: 0 0 8px 0; font-size: 1.5em; color: #4CAF50;">DigiScalability Life Island</h1>
+      <h1 style="margin: 0 0 8px 0; font-family: var(--font-display, 'Bebas Neue', sans-serif); font-weight: 400; font-size: 40px; line-height: 1.05; letter-spacing: 0.5px; color: #4CAF50;">DigiScalability Life Island</h1>
       <p style="margin: 0 0 10px 0; font-size:15px; line-height:1.5;">
         I'm <strong>Abbas</strong> — I build AI products end to end, and this island is my
         portfolio. Walk up to a district to open it, or jump straight there below.</p>
       ${
         compact
           ? ''
-          : `<p data-ai-line style="margin: 0 0 14px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
+          : `<p data-ai-line style="margin: 0 0 14px 0; font-size:14px; line-height:1.5; color:#cdd6e4;">
         ${Object.keys(AI_NPCS).length} villagers talk through <strong>Claude Haiku 4.5</strong> —
         walk up and ask them anything.</p>`
       }
@@ -7015,7 +7017,7 @@ export class SimpleUI {
       : left.length === PASSPORT_ZONES.length
         ? `🛂 Passport: no stamps yet — ${left.join(', ')} to visit`
         : `🛂 Passport: ${pp.count()} of ${pp.total()} stamps — ${left.join(', ')} to go`;
-    return `<p data-passport-progress style="margin:0 0 12px; font-size:13.5px; line-height:1.45; color:#dfe6f2;">${text}</p>`;
+    return `<p data-passport-progress style="margin:0 0 12px; font-size:14px; line-height:1.45; color:#dfe6f2;">${text}</p>`;
   }
 
   /** Set by a welcome CTA that opens a panel or the tour; read once by
@@ -7075,7 +7077,7 @@ export class SimpleUI {
     modal.setAttribute('aria-modal', 'true');
     modal.setAttribute('aria-labelledby', 'ds-name-title');
     modal.innerHTML = `
-      <div id="ds-name-title" style="font-size:26px;font-weight:700;">🌎 Welcome to Life Island</div>
+      <div id="ds-name-title" style="font-size:24px;font-weight:700;">🌎 Welcome to Life Island</div>
       <label for="ds-name-input" style="opacity:0.85;font-size:15px;max-width:320px;">What should other visitors call you?</label>
     `;
     const input = document.createElement('input');
@@ -7086,7 +7088,7 @@ export class SimpleUI {
     input.value = defaultName || '';
     Object.assign(input.style, {
       padding: '11px 14px',
-      fontSize: '16px',
+      fontSize: '17px',
       borderRadius: '12px',
       border: '1px solid rgba(120,160,255,0.35)',
       background: 'rgba(255,255,255,0.1)',
@@ -7100,7 +7102,7 @@ export class SimpleUI {
     btn.className = 'ds-press';
     Object.assign(btn.style, {
       padding: '12px 26px',
-      fontSize: '16px',
+      fontSize: '17px',
       fontWeight: '700',
       borderRadius: '12px',
       border: 'none',
@@ -7113,7 +7115,7 @@ export class SimpleUI {
     err.setAttribute('role', 'alert');
     Object.assign(err.style, {
       color: '#ff9a9a',
-      fontSize: '12.5px',
+      fontSize: '13px',
       marginTop: '9px',
       minHeight: '16px',
     });
@@ -7494,7 +7496,7 @@ export class SimpleUI {
       color: '#e6edf7',
       padding: '13px 15px',
       borderRadius: '12px',
-      fontSize: '12.5px',
+      fontSize: '13px',
       lineHeight: '1.5',
       fontFamily: 'system-ui, sans-serif',
       maxWidth: '270px',
@@ -7510,10 +7512,10 @@ export class SimpleUI {
         approximate location with a weather service. Day and night already follow
         your device clock — that never leaves your device.
       </div>
-      <button id="wx-toggle" style="background:${on ? '#c0392b' : '#4CAF50'};color:#fff;border:none;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12.5px;">
+      <button id="wx-toggle" style="background:${on ? '#c0392b' : '#4CAF50'};color:#fff;border:none;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:13px;">
         ${on ? 'Turn off' : 'Turn on'}
       </button>
-      <a href="/privacy.html" target="_blank" rel="noopener" style="color:#7fb2ff;margin-left:10px;font-size:11.5px;">Privacy</a>
+      <a href="/privacy.html" target="_blank" rel="noopener" style="color:#7fb2ff;margin-left:10px;font-size:12px;">Privacy</a>
     `;
     (pop.querySelector('#wx-toggle') as HTMLButtonElement).addEventListener('click', () => {
       const next = !this.weatherConsentState;
@@ -8051,8 +8053,8 @@ export class SimpleUI {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
         <h3 style="margin:0;color:#ffd34a;">🛒 Island Shop</h3>
         <div style="display:flex;gap:12px;align-items:center;">
-          <span style="color:#ffd34a;font-weight:800;font-size:16px;background:rgba(255,211,74,0.12);padding:4px 12px;border-radius:999px;">🪙 ${state.coins}</span>
-          <button type="button" id="shop-close" aria-label="Close the shop" style="cursor:pointer;font-size:18px;width:44px;height:44px;padding:0;background:transparent;border:none;color:#fff;">✕</button>
+          <span style="color:#ffd34a;font-weight:800;font-size:17px;background:rgba(255,211,74,0.12);padding:4px 12px;border-radius:999px;">🪙 ${state.coins}</span>
+          <button type="button" id="shop-close" aria-label="Close the shop" style="cursor:pointer;font-size:17px;width:44px;height:44px;padding:0;background:transparent;border:none;color:#fff;">✕</button>
         </div>
       </div>
       <div id="shop-tabs" style="display:flex;gap:6px;margin-bottom:8px;">
@@ -8457,7 +8459,7 @@ export class SimpleUI {
       });
       this.raceLine2 = document.createElement('div');
       Object.assign(this.raceLine2.style, {
-        fontSize: '11px',
+        fontSize: '12px',
         color: '#cfe0ff',
         marginTop: '1px',
       });
@@ -8869,18 +8871,18 @@ export class SimpleUI {
           return `<button type="button" data-part="${part}" data-hex="${hex}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="width:${sw}px;height:${sw}px;border-radius:6px;border:2px solid ${active ? '#fff' : 'transparent'};background:${hexStr(hex)};cursor:pointer;margin:0;padding:0;"></button>`;
         })
         .join('');
-      return `<div style="margin-bottom:7px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">${label}</div><div role="group" aria-label="${label}" style="display:grid;grid-template-columns:repeat(6, ${sw}px);gap:4px;">${swatches}</div></div>`;
+      return `<div style="margin-bottom:7px;"><div style="font-size:12px;color:#bbb;margin-bottom:2px;">${label}</div><div role="group" aria-label="${label}" style="display:grid;grid-template-columns:repeat(6, ${sw}px);gap:4px;">${swatches}</div></div>`;
     };
     const hatBtn = (id: string | null, icon: string): string => {
       const active = (opts.equippedHat ?? null) === id;
       const name = id ? `Hat: ${id.replace(/[-_]/g, ' ')}` : 'No hat';
-      return `<button type="button" data-hat="${id ?? ''}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="font-size:16px;min-width:${sw}px;min-height:${sw}px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
+      return `<button type="button" data-hat="${id ?? ''}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="font-size:17px;min-width:${sw}px;min-height:${sw}px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
     };
     const ownedBtns = opts.hats
       .filter((h) => opts.ownedHats.includes(h.id))
       .map((h) => hatBtn(h.id, h.icon))
       .join('');
-    const hatRow = `<div style="margin-bottom:6px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">Hat</div><div style="display:flex;flex-wrap:wrap;align-items:center;">${hatBtn(null, '🚫')}${ownedBtns || '<span style="font-size:11px;color:#888;margin-left:4px;">buy hats at the 🛒 shop</span>'}</div></div>`;
+    const hatRow = `<div style="margin-bottom:6px;"><div style="font-size:12px;color:#bbb;margin-bottom:2px;">Hat</div><div style="display:flex;flex-wrap:wrap;align-items:center;">${hatBtn(null, '🚫')}${ownedBtns || '<span style="font-size:12px;color:#888;margin-left:4px;">buy hats at the 🛒 shop</span>'}</div></div>`;
 
     this.customizeDiv.innerHTML = `
       <div style="font-weight:700;margin-bottom:9px;">🎨 Appearance</div>
@@ -9139,7 +9141,7 @@ export class SimpleUI {
       borderRadius: '14px',
       textAlign: 'center',
       pointerEvents: 'auto',
-      fontSize: '14.5px',
+      fontSize: '15px',
       // 1650 (was 1500): the modal band. At 1500 the manager's scrim (1640)
       // would grey out and swallow the panel's own clicks.
       zIndex: '1650',
@@ -9484,7 +9486,7 @@ export class SimpleUI {
         background: here ? 'rgba(255,255,255,0.08)' : 'transparent',
         color: here ? '#fff' : '#b8c4d6',
         border: `1px solid ${here ? accent : 'rgba(255,255,255,0.14)'}`,
-        fontSize: '12.5px',
+        fontSize: '13px',
         fontWeight: here ? '700' : '600',
         cursor: here ? 'default' : 'pointer',
       });
@@ -9776,7 +9778,7 @@ export class SimpleUI {
         'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;' +
         (this.isTouch ? 'min-height:44px;box-sizing:border-box;' : '');
       const size = opts.small
-        ? `padding:${this.isTouch ? '9px 12px' : '6px 11px'};font-size:12.5px;`
+        ? `padding:${this.isTouch ? '9px 12px' : '6px 11px'};font-size:13px;`
         : '';
       const style = opts.primary
         ? base + size + `background:${DS.primary};color:#fff;font-weight:600;border:none;`
@@ -9795,14 +9797,14 @@ export class SimpleUI {
         <span data-email style="user-select:all;-webkit-user-select:all;cursor:text;font-size:15px;font-weight:600;color:#fff;
           background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:8px 12px;">${OWNER.email}</span>
         <button type="button" data-copy="${OWNER.email}" title="Copy the email address" style="${this.isTouch ? 'min-height:44px;' : ''}padding:8px 14px;border-radius:8px;
-          border:1px solid rgba(120,160,255,0.45);background:rgba(80,130,255,0.18);color:#cfe0ff;font-size:13.5px;font-weight:600;cursor:pointer;">Copy</button>
+          border:1px solid rgba(120,160,255,0.45);background:rgba(80,130,255,0.18);color:#cfe0ff;font-size:14px;font-weight:600;cursor:pointer;">Copy</button>
         ${withMailto ? link(`mailto:${OWNER.email}`, '✉️ Email', { small: true }) : ''}
       </div>`;
     // One work-history row: role (+ where) left, dates right.
     const xp = (role: string, where: string, when: string): string =>
       `<li style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:6px 0;border-top:1px solid rgba(255,255,255,0.08);">
         <span><strong>${role}</strong>${where ? `, ${where}` : ''}</span>
-        <span style="white-space:nowrap;color:#aab6c8;font-size:12.5px;">${when}</span></li>`;
+        <span style="white-space:nowrap;color:#aab6c8;font-size:13px;">${when}</span></li>`;
     const chip = (t: string): string =>
       `<span style="background:#33333f;padding:5px 11px;border-radius:15px;font-size:13px;">${t}</span>`;
     // Optional lazy thumbnail — hidden by the error handler in showZonePanel if
@@ -9821,7 +9823,7 @@ export class SimpleUI {
     const workRow = (project: string, name: string, status: string): string =>
       `<button type="button" data-open-project="${project}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;margin:6px 0 0;${
         this.isTouch ? 'min-height:44px;' : ''
-      }padding:9px 12px;border-radius:10px;background:transparent;color:#e8edf5;border:1px solid rgba(255,212,121,0.4);font-size:13.5px;text-align:left;cursor:pointer;">
+      }padding:9px 12px;border-radius:10px;background:transparent;color:#e8edf5;border:1px solid rgba(255,212,121,0.4);font-size:14px;text-align:left;cursor:pointer;">
         <span><strong>${name}</strong> · ${status}</span><span aria-hidden="true" style="color:#ffd479;">›</span></button>`;
 
     const contents: { [key: string]: string } = {
@@ -9838,7 +9840,7 @@ export class SimpleUI {
           <li>🎨 <strong>Personal</strong> — kitchens, family recipes, creative tools</li>
           <li>📬 <strong>Contact</strong> — hiring, or have a project?</li>
         </ul>
-        <p style="margin-top:12px; font-size:13.5px; color:#cdd;">🛂 Visit all four
+        <p style="margin-top:12px; font-size:14px; color:#cdd;">🛂 Visit all four
         <em>in person</em> to stamp your <strong>Passport</strong> and earn the Founder's Crown 👑.</p>
         <p style="margin-top: 12px; font-size:13px; color:#aaa;"><em>${
           this.isTouch
@@ -9852,7 +9854,7 @@ export class SimpleUI {
         <p style="font-size:14px;">I build AI products end to end and make them safe to put in
         front of the public: the model call and its guardrails, the realtime client, the cloud
         functions and the tests.</p>
-        <p style="font-size:13.5px;color:#bcd;background:rgba(90,140,255,0.12);
+        <p style="font-size:14px;color:#bcd;background:rgba(90,140,255,0.12);
           border-radius:10px;padding:8px 12px;margin:10px 0;">🛠️ <strong>Now:</strong>
           founder &amp; lead developer at DigiScalability (solo, since Jan 2025), building this
           open-source (MIT) island, digiscalability.com and RankPilot (pre-launch). Before that:
@@ -9864,8 +9866,8 @@ export class SimpleUI {
           ${chip('Docker')} ${chip('GitHub Actions')}
         </div>
         <h3 style="margin-bottom:6px;">Education</h3>
-        <p style="font-size:13.5px;margin:0 0 4px;">BSc Computer Science, SZABIST, Islamabad (2016)</p>
-        <p style="font-size:13.5px;margin:0;">Master of Information Technology (coursework), Deakin
+        <p style="font-size:14px;margin:0 0 4px;">BSc Computer Science, SZABIST, Islamabad (2016)</p>
+        <p style="font-size:14px;margin:0;">Master of Information Technology (coursework), Deakin
         University, 2017–2019: 11 of 16 credit points completed</p>
         <div style="margin-top:16px;">
           ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
@@ -9879,16 +9881,16 @@ export class SimpleUI {
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
         ${card(
           `
-          <h3 style="margin:0 0 2px;">🏝️ This Island <span style="font-size:11px;color:#ffd479;">● you are standing in it</span></h3>
-          <p style="margin:6px 0;font-size:13.5px;">The flagship: a multiplayer 3D world (Three.js +
+          <h3 style="margin:0 0 2px;">🏝️ This Island <span style="font-size:12px;color:#ffd479;">● you are standing in it</span></h3>
+          <p style="margin:6px 0;font-size:14px;">The flagship: a multiplayer 3D world (Three.js +
           TypeScript) where <strong>${aiCount} villagers talk through Claude Haiku 4.5</strong>. A
           scheduled planner agent assigns their jobs each morning, they follow real daily schedules
           (and sleep in the cottages at night), and a nightly analyst agent (Claude Sonnet) emails a
           usage digest and files GitHub issues about its own island.</p>
-          <p style="margin:6px 0;font-size:12.5px;color:#cdd6e4;">Three.js + TypeScript + Firebase +
+          <p style="margin:6px 0;font-size:13px;color:#cdd6e4;">Three.js + TypeScript + Firebase +
           Claude · open source (MIT) · ~280 KB app + 175 KB three.js (brotli) · a hard
           monthly token cap on the model calls.</p>
-          <p style="margin:6px 0;font-size:12.5px;color:#cdd6e4;">Proof it runs itself: read the
+          <p style="margin:6px 0;font-size:13px;color:#cdd6e4;">Proof it runs itself: read the
           📰 Island Times (Portfolio menu) — compiled nightly by the analyst — or walk up to a
           villager and ask what they're doing today.</p>
           <div style="margin-top:8px;">
@@ -9922,11 +9924,11 @@ export class SimpleUI {
         `)}
         ${card(
           `
-          <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:11px;color:#ffcc80;">● live, pre-launch</span></h3>
-          <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Problem:</strong>
+          <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:12px;color:#ffcc80;">● live, pre-launch</span></h3>
+          <p style="margin:6px 0;font-size:14px;"><strong style="color:#ffcc80;">Problem:</strong>
           search is shifting from ten blue links to AI answers — and most sites are invisible to
           the models doing the answering.</p>
-          <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Built:</strong>
+          <p style="margin:6px 0;font-size:14px;"><strong style="color:#ffcc80;">Built:</strong>
           a platform that audits a site's schema, content &amp; LLM-readiness and shows exactly
           what to fix. Solo build.</p>
           <p style="margin:6px 0;font-size:13px;color:#cdd6e4;"><strong>Status:</strong> live, pre-launch: no users beyond test accounts.</p>
@@ -9936,9 +9938,9 @@ export class SimpleUI {
         )}
         ${card(
           `
-          <h3 style="margin:0 0 2px;">🍫 ChocoMate <span style="font-size:11px;color:#aab;">● paused</span></h3>
+          <h3 style="margin:0 0 2px;">🍫 ChocoMate <span style="font-size:12px;color:#aab;">● paused</span></h3>
           ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront', 820, 384)}
-          <p style="margin:6px 0;font-size:13.5px;">Direct-to-consumer chocolate brand —
+          <p style="margin:6px 0;font-size:14px;">Direct-to-consumer chocolate brand —
           the storefront, brand system, and content pipeline, end to end. Paused.</p>
           <div style="margin-top:6px;">${link('https://chocomate.au', '↗ chocomate.au', { small: true })}</div>
         `,
@@ -9947,17 +9949,17 @@ export class SimpleUI {
         <div style="text-align:left;">
           <div data-project="digiscalability">
           <h3 style="margin-bottom:4px;margin-top:14px;">🌐 digiscalability.com</h3>
-          <p style="margin-top:4px;font-size:13.5px;">My business site, built solo: Next.js 15 +
+          <p style="margin-top:4px;font-size:14px;">My business site, built solo: Next.js 15 +
           Firebase on Vercel.
           ${link('https://digiscalability.com', '↗ digiscalability.com')}</p>
           </div>
           <div data-project="banos">
           <h3 style="margin-bottom:4px;margin-top:14px;">📖 Bano's Cookbook</h3>
-          <p style="margin-top:4px;font-size:13.5px;">Digitising my mother's (Ammi's) handwritten recipes from 1981.</p>
+          <p style="margin-top:4px;font-size:14px;">Digitising my mother's (Ammi's) handwritten recipes from 1981.</p>
           </div>
           <div data-project="insta">
           <h3 style="margin-bottom:4px;margin-top:14px;">🧰 Insta Services API</h3>
-          <p style="margin-top:4px;font-size:13.5px;">Modernising an inherited 2016 Java system
+          <p style="margin-top:4px;font-size:14px;">Modernising an inherited 2016 Java system
           (Java API + Android app) with login rate limiting, health checks and nightly
           backups.</p>
           </div>
@@ -9971,15 +9973,15 @@ export class SimpleUI {
         are real.</p>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; text-align:left;">
           <div><h3 style="margin:0 0 4px;">🍽️ Kitchens</h3>
-            <p style="font-size:13.5px;">Chef at Mr. Miyagi and Baxter Tavern, Melbourne,
+            <p style="font-size:14px;">Chef at Mr. Miyagi and Baxter Tavern, Melbourne,
             2019 – 2024.</p></div>
           <div><h3 style="margin:0 0 4px;">📖 Family Heritage</h3>
-            <p style="font-size:13.5px;">Preserving my mother's (Ammi's) handwritten recipes from 1981 — the heart behind Bano's Cookbook.</p></div>
+            <p style="font-size:14px;">Preserving my mother's (Ammi's) handwritten recipes from 1981 — the heart behind Bano's Cookbook.</p></div>
           <div><h3 style="margin:0 0 4px;">🎬 Creative Tooling</h3>
-            <p style="font-size:13.5px;">Blender, DaVinci Resolve, ComfyUI — a full studio
+            <p style="font-size:14px;">Blender, DaVinci Resolve, ComfyUI — a full studio
             for product storytelling and 3D worlds like this one.</p></div>
           <div><h3 style="margin:0 0 4px;">📚 Always Learning</h3>
-            <p style="font-size:13.5px;">BSc Computer Science (SZABIST, 2016), and Master of IT
+            <p style="font-size:14px;">BSc Computer Science (SZABIST, 2016), and Master of IT
             coursework at Deakin: 11 of 16 credit points completed.</p></div>
         </div>
         <div style="margin-top:8px;">
@@ -9990,7 +9992,7 @@ export class SimpleUI {
       `,
       contact: `
         <h2 style="margin-top: 0; color: #9C27B0;">📬 Get In Touch</h2>
-        <p style="font-size:16px;font-weight:600;margin:0 0 6px;">Hiring, or have a project? This reaches me directly.</p>
+        <p style="font-size:17px;font-weight:600;margin:0 0 6px;">Hiring, or have a project? This reaches me directly.</p>
         ${emailRow(true)}
         <div style="margin: 12px 0 2px; display:flex; flex-wrap:wrap; justify-content:center;">
           ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
@@ -10002,7 +10004,7 @@ export class SimpleUI {
           ${link('https://instagram.com/digiscalability', '📸 Instagram', { small: true })}
           ${link('https://youtube.com/@DigiScalability', '▶️ YouTube', { small: true })}
         </div>
-        <p style="font-size:12.5px; color:#999;">Melbourne, Victoria. X, Instagram and YouTube
+        <p style="font-size:13px; color:#999;">Melbourne, Victoria. X, Instagram and YouTube
         are @digiscalability; LinkedIn is my personal profile.</p>
       `,
       // The recruiter front door (showHireCard / ?zone=hire). Copy comes from
@@ -10012,12 +10014,12 @@ export class SimpleUI {
       // and digiscalability.com/about lead with it too.
       hire: `
         <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#ffd479;font-weight:700;margin:0 0 6px;display:flex;align-items:center;justify-content:center;gap:6px;">${icon('file-text', 16)}<span>Hiring?</span></div>
-        <h2 style="margin:0 0 2px;color:#fff;font-size:26px;">Abbas Ali</h2>
+        <h2 style="margin:0 0 2px;color:#fff;font-family:var(--font-display, 'Bebas Neue', sans-serif);font-weight:400;font-size:40px;line-height:1.05;letter-spacing:0.5px;">Abbas Ali</h2>
         <p style="margin:0 0 10px;font-size:15px;font-weight:600;color:#cfe0ff;">AI &amp; software engineer · Melbourne</p>
-        <p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:#dde3ee;">I build AI
+        <p style="margin:0 0 12px;font-size:14px;line-height:1.55;color:#dde3ee;">I build AI
         products end to end and make them safe to put in front of the public: the model call and
         its guardrails, the realtime client, the cloud functions and the tests.</p>
-        <p style="margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(18,183,106,0.14);border:1px solid rgba(120,220,170,0.4);font-size:13.5px;line-height:1.45;color:#d7f5e6;">
+        <p style="margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(18,183,106,0.14);border:1px solid rgba(120,220,170,0.4);font-size:14px;line-height:1.45;color:#d7f5e6;">
           Open to AI and software engineering roles in Melbourne (full-time or contract).</p>
         <div data-hire-actions style="display:flex;flex-wrap:wrap;justify-content:center;">
           ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
@@ -10027,10 +10029,10 @@ export class SimpleUI {
         ${emailRow(false)}
         <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:10px 0 0;">
           <button type="button" data-hire-contact style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
-            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:13.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:14px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
             ${icon('send', 16)}<span>Send a message</span></button>
           <button type="button" data-hire-tour style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
-            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:14px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
             ${icon('play', 16)}<span>Or watch the highlights tour (under a minute)</span></button>
         </div>
         <div data-selected-work style="margin:16px 0 0;text-align:left;">
@@ -10763,7 +10765,7 @@ export class SimpleUI {
     this.stepHintAside(true);
     panel.innerHTML = `
       <div style="font-weight:600; font-size:15px; margin-bottom:4px;">📺 The wall screen</div>
-      <div style="font-size:12.5px; color:#aab; margin-bottom:12px;">What shall we watch? Paste a YouTube link (or any https page).</div>
+      <div style="font-size:13px; color:#aab; margin-bottom:12px;">What shall we watch? Paste a YouTube link (or any https page).</div>
     `;
     const presets = document.createElement('div');
     Object.assign(presets.style, { display: 'flex', gap: '8px', marginBottom: '10px' });
@@ -10817,7 +10819,7 @@ export class SimpleUI {
       background: DS.primary,
       color: '#fff',
       fontWeight: '600',
-      fontSize: '13.5px',
+      fontSize: '14px',
       cursor: 'pointer',
     });
     const submit = (): void => {
@@ -10849,7 +10851,7 @@ export class SimpleUI {
       background: 'none',
       border: 'none',
       color: '#99a',
-      fontSize: '16px',
+      fontSize: '17px',
       cursor: 'pointer',
       // 44px thumb box around the small glyph (same fix as the modal ×).
       width: '44px',
@@ -10920,7 +10922,7 @@ export class SimpleUI {
     });
     const hint = document.createElement('span');
     hint.textContent = 'blank? that site refuses embedding →';
-    Object.assign(hint.style, { fontSize: '11px', color: 'rgba(255,255,255,0.55)' });
+    Object.assign(hint.style, { fontSize: '12px', color: 'rgba(255,255,255,0.55)' });
     chrome.appendChild(hint);
     const mkChip = (label: string): HTMLElement => {
       const c = document.createElement('a');
@@ -10931,7 +10933,7 @@ export class SimpleUI {
         background: 'rgba(12,12,20,0.9)',
         border: '1px solid rgba(255,255,255,0.2)',
         color: '#dfe6ff',
-        fontSize: '12.5px',
+        fontSize: '13px',
         cursor: 'pointer',
         textDecoration: 'none',
       });
@@ -11010,9 +11012,9 @@ export class SimpleUI {
     });
     this.stepHintAside(true);
     panel.innerHTML = `
-      <div style="font-weight:600; font-size:14.5px; margin-bottom:2px;">🔒 The door is locked</div>
+      <div style="font-weight:600; font-size:15px; margin-bottom:2px;">🔒 The door is locked</div>
       <div style="font-size:12px; color:#aab; margin-bottom:10px;">Enter the door code</div>
-      <div id="pin-dots" style="letter-spacing:8px; font-size:22px; min-height:28px; margin-bottom:10px;">····</div>
+      <div id="pin-dots" style="letter-spacing:8px; font-size:20px; min-height:28px; margin-bottom:10px;">····</div>
     `;
     const dots = panel.querySelector('#pin-dots') as HTMLElement;
     // The locked door points to the Sailor (P2-D9, decision P2-2): after the
@@ -11073,7 +11075,7 @@ export class SimpleUI {
         border: '1px solid rgba(255,255,255,0.15)',
         background: 'rgba(255,255,255,0.06)',
         color: '#fff',
-        fontSize: '16px',
+        fontSize: '17px',
         cursor: 'pointer',
       });
       b.addEventListener('click', () => {
@@ -11165,7 +11167,7 @@ export class SimpleUI {
         padding: '0',
         borderRadius: '16px',
         pointerEvents: 'auto',
-        fontSize: '14.5px',
+        fontSize: '15px',
         border: '1px solid rgba(120, 160, 255, 0.22)', // de-glow twin of the chat panel
         boxShadow: '0 6px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
         opacity: '0',

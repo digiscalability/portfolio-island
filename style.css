@@ -75,6 +75,16 @@
   --ds-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* D12: controls take the text around them, not the user agent's font
+   (DA-06: every button rendered in Arial). */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+}
+
 /* Screen-reader only helper (used for live regions and visually-hidden content) */
 .sr-only {
   position: absolute !important;
@@ -97,15 +107,18 @@
 }
 
 body {
-  font-family:
-    Inter,
-    ui-sans-serif,
+  /* D12: the system UI stack; Inter is dropped. index.html's :root defines
+     --font-ui; the literal stack is the fallback before it parses. */
+  font-family: var(
+    --font-ui,
     system-ui,
     -apple-system,
     'Segoe UI',
     Roboto,
     'Helvetica Neue',
-    Arial;
+    Arial,
+    sans-serif
+  );
   overflow: hidden;
   background: linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 100%);
   color: #0b1220;
@@ -430,7 +443,7 @@ html.reduced-motion #ld-orbit {
   padding: 14px 18px;
   border-radius: 14px;
   font-weight: 700;
-  font-size: 16px;
+  font-size: 17px;
   box-shadow: 0 12px 30px rgba(20, 24, 44, 0.12);
   touch-action: manipulation;
 }
@@ -533,7 +546,7 @@ html.reduced-motion #ld-orbit {
 }
 
 .welcome-hero h1 {
-  font-size: 34px;
+  font-size: 32px;
   margin-bottom: 8px;
 }
 
@@ -744,7 +757,7 @@ html.reduced-motion #ld-orbit {
 
 .chat-header h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .chat-close {
@@ -926,7 +939,7 @@ html.reduced-motion #ld-orbit {
 
 .customization-buttons button {
   padding: 12px 30px;
-  font-size: 16px;
+  font-size: 17px;
   border: none;
   border-radius: 10px;
   cursor: pointer;
@@ -1102,7 +1115,7 @@ html.reduced-motion #ld-orbit {
   border: none;
   color: white;
   padding: 10px 12px;
-  font-size: 18px;
+  font-size: 17px;
   border-radius: 8px;
   cursor: pointer;
 }
@@ -1349,7 +1362,7 @@ html.reduced-motion #ld-orbit {
 #ds-drawer .ds-ic-slot {
   flex: none;
   width: 24px;
-  font-size: 18px;
+  font-size: 17px;
   line-height: 24px;
   text-align: center;
 }
@@ -1395,7 +1408,7 @@ kbd.kc {
   background: var(--kg-ring, #6fcf97);
   background: color-mix(in srgb, var(--kg-ring, #6fcf97) 85%, #fff);
   color: #0b1220;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.5px;
   line-height: 1;
@@ -1451,7 +1464,7 @@ kbd.kc {
   background: rgba(76, 91, 224, 0.14);
   color: #fff;
   font: inherit;
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
@@ -1478,7 +1491,7 @@ kbd.kc {
 }
 .ds-controls-setting small {
   color: #c5cfdd;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .ds-controls-range {
   flex-direction: column;
@@ -1516,4 +1529,13 @@ kbd.kc {
 .ds-press:active,
 .hud-btn.ds-press:active {
   filter: var(--ds-press-filter);
+}
+/* D12: panel titles in the display face, 28 px (an inline size, such as the
+   hire card's 40 px name, still wins). */
+#ui-overlay [role='dialog'] h2 {
+  font-family: var(--font-display, 'Bebas Neue', sans-serif);
+  font-weight: 400;
+  font-size: 28px;
+  line-height: 1.1;
+  letter-spacing: 0.5px;
 }
