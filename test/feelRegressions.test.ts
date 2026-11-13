@@ -200,7 +200,10 @@ describe('shadowMap.autoUpdate has exactly one owner', () => {
     expect(writes).toHaveLength(1);
     expect(s).toContain('this.applyShadowPolicy();');
     // The policy derives the field from freeze + rung + the always-half lever.
-    expect(s).toContain('!this.shadowFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow');
+    // The freeze is the composed one (E4): the interior/intro freeze OR the
+    // modal's, so a modal's close can never clear a hall's freeze.
+    expect(s).toContain('!this.depthFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow');
+    expect(s).toContain('return this.shadowFrozen || this.modalFrozen;');
   });
 
   test('the half-rate re-arm and the engage refresh both respect the freeze', () => {
@@ -208,7 +211,7 @@ describe('shadowMap.autoUpdate has exactly one owner', () => {
     // pass every other frame — exactly the waste the interior freeze stops.
     const s = src('SimpleRenderer.ts');
     expect(s).toContain(
-      'if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.shadowFrozen) {',
+      'if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.depthFrozen) {',
     );
     expect(s).toContain('if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;');
   });
@@ -622,5 +625,123 @@ describe('the governor knows when the frame is CPU-bound (E3)', () => {
     expect(s).toContain("new URLSearchParams(window.location.search).get('gpuheavy') === '1'");
     expect(s).toContain('if (this.gpuHeavyParam) this.renderGpuHeavy();');
     expect(s).toContain('public getGovernorState(): GovernorState');
+  });
+});
+
+// E4: behind a modal the low tier renders a third of the frames, freezes the
+// shadow map without touching the interior/intro freeze, and pauses the
+// governor; the close resets its clocks and keeps the rung.
+describe('the world behind a modal on the low tier (E4)', () => {
+  test('the modal freeze composes with the interior freeze and never clears it', () => {
+    const g = governor({ lowTier: true });
+    Object.assign(g, { modalOpen: false, modalApplied: false, modalFrozen: false, modalFrame: 0 });
+    gcall(g, 'setShadowFreeze', true); // a hall
+    gcall(g, 'applyModal', true);
+    const sm = (g.renderer as { shadowMap: { autoUpdate: boolean; needsUpdate: boolean } })
+      .shadowMap;
+    expect(sm.autoUpdate).toBe(false);
+    sm.needsUpdate = false;
+    gcall(g, 'applyModal', false);
+    // The hall's freeze still holds: no refresh, still frozen.
+    expect(g.shadowFrozen).toBe(true);
+    expect(sm.needsUpdate).toBe(false);
+    expect(sm.autoUpdate).toBe(false);
+  });
+
+  test('the governor decides nothing while paused, and the close resets its clocks but keeps the rung', () => {
+    const g = governor({ lowTier: true, renderScale: 1, cpuEma: 0.006, fpsEma: 10 });
+    Object.assign(g, { modalOpen: true, modalApplied: false, modalFrozen: false, modalFrame: 0 });
+    g.qualityRung = 3;
+    gcall(g, 'applyModal', true);
+    decide(g, 6, { fps: 10, cpuS: 0.006 });
+    expect(g.renderScale).toBe(1);
+    expect(g.fpsEma).toBe(10);
+    expect(g.cpuEma).toBe(0.006);
+    gcall(g, 'applyModal', false);
+    expect(g.fpsEma).toBe(60);
+    expect(g.cpuEma).toBe(0);
+    expect(g.qualityAccum).toBe(0);
+    expect(g.lowStreak).toBe(0);
+    expect(g.qualityRung).toBe(3);
+    expect(g.governorArmed).toBe(true);
+  });
+
+  test('the limiter skips 2 of 3 frames, keeps their time, and the listener is removed', () => {
+    const s = src('SimpleRenderer.ts');
+    expect(s).toContain("fx.register('modalDivisor', { desktop: false, low: true });");
+    expect(s).toContain('private static readonly MODAL_DIVISOR = 3;');
+    expect(s).toContain("const modal = this.modalOpen && fx.on('modalDivisor');");
+    expect(s).toContain('if (this.frameCapFps > 0 || this.modalApplied) {');
+    expect(s).toContain('(++this.modalFrame < SimpleRenderer.MODAL_DIVISOR ||');
+    expect(s).toContain('this.frameAccum < SimpleRenderer.MODAL_DIVISOR * this.lastFrameCpu)');
+    expect(s).toContain('this.lastFrameCpu = (performance.now() - cpuT0) / 1000;');
+    expect(s).toContain("window.addEventListener('ds:modal', this._onModal);");
+    expect(s).toContain("window.removeEventListener('ds:modal', this._onModal);");
+    // The skip comes before the update callback, so a skipped frame runs neither.
+    const loop = s.slice(
+      s.indexOf('public startRenderLoop('),
+      s.indexOf('private applyRefreshEstimate'),
+    );
+    expect(loop.indexOf('++this.modalFrame')).toBeLessThan(
+      loop.indexOf('this.renderCallback(deltaTime)'),
+    );
+    // The pause sits before every measurement in the governor.
+    const gov = s.slice(
+      s.indexOf('private updateAdaptiveResolution'),
+      s.indexOf('public armGovernor'),
+    );
+    expect(gov.indexOf('if (this.modalApplied) return;')).toBeLessThan(
+      gov.indexOf('this.fpsEma +='),
+    );
+  });
+
+  // A copy of the loop's arithmetic (no cap on a 60 Hz phone): a rendered
+  // frame costs `cost` s of main thread, a skipped rAF tick costs nothing,
+  // and the next tick comes at the next vsync after the work ends.
+  const simulate = (
+    cost: number,
+    seconds: number,
+  ): { rendered: number; busy: number; wall: number } => {
+    const vsync = 1 / 60;
+    let t = 0;
+    let accum = 0;
+    let frame = 0;
+    let last = 0;
+    let rendered = 0;
+    let busy = 0;
+    let wall = 0;
+    let prev = 0;
+    while (t < seconds) {
+      const raw = t - prev;
+      prev = t;
+      accum += raw;
+      if (++frame < 3 || accum < 3 * last) {
+        t += vsync;
+        continue;
+      }
+      frame = 0;
+      wall += accum;
+      accum = 0;
+      rendered++;
+      busy += cost;
+      last = cost;
+      t += Math.ceil(cost / vsync) * vsync;
+    }
+    return { rendered, busy: busy / seconds, wall };
+  };
+
+  test('the limiter, simulated: a healthy 60 Hz phone renders a third of the frames, in true wall time', () => {
+    const r = simulate(0.004, 10);
+    expect(r.rendered).toBeGreaterThanOrEqual(199);
+    expect(r.rendered).toBeLessThanOrEqual(201);
+    expect(r.wall).toBeGreaterThan(9.9);
+  });
+
+  test('the limiter, simulated: a CPU-bound frame keeps the main thread busy a third of the time', () => {
+    // 70 ms frames (the 4x low tier): the count alone renders every 70 + 2 x 16.7 ms
+    // and stays about 68% busy; the time floor holds it near a third.
+    const r = simulate(0.07, 10);
+    expect(r.busy).toBeLessThan(0.4);
+    expect(r.busy).toBeGreaterThan(0.25);
   });
 });

@@ -1774,8 +1774,159 @@ const FX_PAIR = ({ name }) => {
  * between); programs the ON sides add are the effect's. Then 6 x 1.5 s per
  * side of timing at the spawn, escalating like --ab.
  */
+// E4's modal scenario: main-thread busy time (long tasks and long animation
+// frames, merged, per second) and Event Timing durations for taps on the
+// panel's buttons, recorded from the first script.
+const MODAL_INIT = `(() => {
+  if (window.top !== window) return;
+  const M = (window.__modal = { busy: [], events: [] });
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) M.busy.push([e.startTime, e.startTime + e.duration]); }).observe({ type: 'longtask', buffered: true }); } catch (e) {}
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) M.busy.push([e.startTime, e.startTime + e.duration]); }).observe({ type: 'long-animation-frame', buffered: true }); } catch (e) {}
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) M.events.push({ t: e.startTime, name: e.name, d: e.duration }); }).observe({ type: 'event', durationThreshold: 16, buffered: true }); } catch (e) {}
+})();`;
+/** Busy ms per second over [a, b): the union of the recorded intervals, clipped. */
+const BUSY = ([a, b]) => {
+  const iv = window.__modal.busy.filter((x) => x[1] > a && x[0] < b).map((x) => [Math.max(a, x[0]), Math.min(b, x[1])]).sort((x, y) => x[0] - y[0]);
+  let sum = 0;
+  let cur = null;
+  for (const x of iv) {
+    if (!cur || x[0] > cur[1]) {
+      if (cur) sum += cur[1] - cur[0];
+      cur = [x[0], x[1]];
+    } else cur[1] = Math.max(cur[1], x[1]);
+  }
+  if (cur) sum += cur[1] - cur[0];
+  return +(sum / ((b - a) / 1000)).toFixed(1);
+};
+// E4's bar: the main thread busy under 400 ms a second behind Projects (from about 1005).
+const MODAL_BUSY_MS_S = 400;
+
+/** The Projects panel through the UI on a touch build: the drawer, the Portfolio menu, Projects. */
+async function openProjects(page) {
+  const tapSel = async (sel) => {
+    const r = await page.evaluate((s) => {
+      const el = document.querySelector(s);
+      if (!el) return null;
+      const b = el.getBoundingClientRect();
+      return b.width > 1 ? [b.left + b.width / 2, b.top + b.height / 2] : null;
+    }, sel);
+    if (!r) return false;
+    await page.touchscreen.tap(r[0], r[1]);
+    return true;
+  };
+  await tapSel('.hud-btn[aria-label="Open island menu"]');
+  await page.waitForTimeout(800);
+  await tapSel('.hud-btn[aria-label="Open portfolio menu"]');
+  await page.waitForTimeout(1000);
+  const ok = await tapSel('button[data-section="projects"]');
+  await page.waitForTimeout(1500);
+  return { tapped: ok, panel: await page.evaluate(() => window.__app.ui.panels.current()) };
+}
+
+/**
+ * --fx modalDivisor (E4): the lowtier4x profile, governor live. Projects is
+ * opened through the UI, then the switch alternates off and on behind it
+ * (__dsFx.modalDivisor, read per frame), 4 s a side for --cycles cycles:
+ * per side the main-thread busy ms/s and the Event Timing durations of taps
+ * on the panel's own buttons (non-closing ones). The panel region's pixels
+ * on against off, and the governor rung before and after.
+ */
+async function modeModal(args) {
+  const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
+  const browser = await lib.launch();
+  const p = LOWTIER4X();
+  const cycles = Number(args.cycles || 4);
+  const data = { mode: 'fx', effect: 'modalDivisor', scenario: 'modal', profile: p.name, profiles: {}, checks: [], leaks: [], signUpMissing: 0 };
+  try {
+    const s = await lib.openSession(browser, p, { init: [GATE_INIT({ nogpu: true }), MODAL_INIT], fx: { modalDivisor: false } });
+    const { page } = s;
+    const set = (v) => page.evaluate((x) => (window.__dsFx = Object.assign(window.__dsFx || {}, { modalDivisor: x })), v);
+    try {
+      await bootPage(page, server.url, p, args.hour || '12');
+      await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
+      await page.waitForTimeout(8000);
+      data.governorBefore = await page.evaluate(GOV_STATE);
+      data.open = await openProjects(page);
+      if (data.open.panel !== 'zone') throw new Error(`hook missing: the Projects panel did not open (${JSON.stringify(data.open)})`);
+      const buttons = await page.evaluate(() => {
+        const z = window.__app.ui.zonePanelDiv;
+        if (!z) return [];
+        return [...z.querySelectorAll('button, [role=tab]')]
+          .filter((b) => !/close|×|✕|back|leave/i.test(`${b.getAttribute('aria-label') || ''} ${b.textContent || ''}`) && !b.closest('a'))
+          .slice(0, 6)
+          .map((b) => {
+            const r = b.getBoundingClientRect();
+            return [r.left + r.width / 2, r.top + r.height / 2];
+          })
+          .filter(([x, y]) => x > 0 && y > 0 && y < innerHeight);
+      });
+      const sides = { off: { busy: [], events: [] }, on: { busy: [], events: [] } };
+      for (let c = 0; c < cycles; c++) {
+        for (const side of ['off', 'on']) {
+          await set(side === 'on');
+          await page.waitForTimeout(600);
+          const t0 = await page.evaluate(() => performance.now());
+          // --no-taps: the busy time of the panel left alone.
+          const taps = args.noTaps ? [] : buttons.slice(0, 3);
+          for (const [x, y] of taps) {
+            await page.touchscreen.tap(x, y);
+            await page.waitForTimeout(700);
+          }
+          await page.waitForTimeout(Math.max(0, 4000 - taps.length * 700));
+          const t1 = await page.evaluate(() => performance.now());
+          sides[side].busy.push(await page.evaluate(BUSY, [t0, t1]));
+          sides[side].events.push(...(await page.evaluate(([a, b]) => window.__modal.events.filter((e) => e.t >= a && e.t < b && /pointer|click|touch/.test(e.name)).map((e) => e.d), [t0, t1])));
+          sides[side].state = await page.evaluate(GOV_STATE);
+        }
+      }
+      // The panel region, on against off (the canvas behind a translucent panel).
+      const rect = await page.evaluate(() => {
+        const z = window.__app.ui.zonePanelDiv;
+        const r = z.getBoundingClientRect();
+        return { x: Math.max(0, r.left), y: Math.max(0, r.top), width: Math.min(innerWidth, r.width), height: Math.min(innerHeight - Math.max(0, r.top), r.height) };
+      });
+      const shot = async (v) => {
+        await set(v);
+        await page.waitForTimeout(800);
+        return lib.pngDecode(await page.screenshot({ clip: rect }));
+      };
+      const a = await shot(false);
+      const b = await shot(true);
+      let diff = 0;
+      for (let i = 0; i < a.data.length; i += 4) if (Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]) > 24) diff++;
+      data.panelDiffPct = +((100 * diff) / (a.data.length / 4)).toFixed(2);
+      await set(null);
+      await page.evaluate(() => window.__app.ui.panels.closeAll());
+      await page.waitForTimeout(3000);
+      data.governorAfter = await page.evaluate(GOV_STATE);
+      data.sides = { off: { busy: sides.off.busy, eventsMs: sides.off.events, divisor: sides.off.state && sides.off.state.modalDivisor }, on: { busy: sides.on.busy, eventsMs: sides.on.events, divisor: sides.on.state && sides.on.state.modalDivisor } };
+    } finally {
+      await s.close({ waitSignUpMs: 20000 });
+      if (s.net.leaks.length) data.leaks.push(...s.net.leaks);
+      if (!s.net.signUpSeen && !s.net.bootProofSeen) data.signUpMissing++;
+    }
+  } finally {
+    await browser.close().catch(() => {});
+    await server.stop();
+  }
+  const check = (name, pass, value, expect) => data.checks.push({ name, pass, value, expect });
+  const S = data.sides;
+  if (S) {
+    check('lowtier4x behind Projects, divisor on: main thread busy ms/s (median)', median(S.on.busy) < MODAL_BUSY_MS_S, { on: median(S.on.busy), off: median(S.off.busy) }, `< ${MODAL_BUSY_MS_S} (wave-2 main: about 1005)`);
+    const eOn = S.on.eventsMs.length ? median(S.on.eventsMs) : null;
+    const eOff = S.off.eventsMs.length ? median(S.off.eventsMs) : null;
+    check('Event Timing durations of taps on the panel fall (one-sided, T = 0)', eOn === null || eOff === null ? null : eOn - eOff <= 0, { on: eOn, off: eOff, nOn: S.on.eventsMs.length, nOff: S.off.eventsMs.length }, 'on - off <= 0 ms');
+    check('the panel region on against off', data.panelDiffPct < 1, data.panelDiffPct, '< 1% of pixels');
+    check('the governor rung is the same before and after', data.governorBefore.qualityRung === data.governorAfter.qualityRung, [data.governorBefore.qualityRung, data.governorAfter.qualityRung], 'equal');
+  }
+  data.verdict = data.leaks.length ? 'fail-closed' : data.signUpMissing ? 'inconclusive' : data.checks.some((c) => c.pass === false) ? 'fail' : data.checks.some((c) => c.pass === null) ? 'inconclusive' : 'pass';
+  return data;
+}
+
 async function modeFx(args) {
   const name = String(args.fx);
+  // E4's modal divisor is measured behind a panel on the 4x low tier, not by off/on frame pairs.
+  if (name === 'modalDivisor' && !args.pairs) return modeModal(args);
   const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
   const browser = await lib.launch();
   const profiles = String(args.profiles || 'desktop,lowtier')
@@ -1915,7 +2066,7 @@ const LOWTIER4X = () => ({ ...lib.profile('lowtier'), name: 'lowtier4x', cpu: 4 
 /** The governor's state: E3's snapshot where the build has it, else the private fields. */
 const GOV_STATE = () => {
   const sr = window.__app.renderer;
-  if (typeof sr.getGovernorState === 'function') return { ...sr.getGovernorState(), via: 'getGovernorState' };
+  if (typeof sr.getGovernorState === 'function') return { ...sr.getGovernorState(), armed: sr.governorArmed, lowBar: sr.fpsLowThreshold, lowStreak: sr.lowStreak, via: 'getGovernorState' };
   return { renderScale: sr.renderScale, fpsEma: sr.fpsEma, cpuEma: sr.cpuEma ?? null, qualityRung: sr.qualityRung, cpuBound: sr.cpuBound ?? null, modalDivisor: null, via: 'fields' };
 };
 // E3's bars: on the 4x low tier after 30 s the scale is 0.9 or more (from
@@ -2119,7 +2270,7 @@ function printSummary(data) {
     const b = data.bundle.B;
     lines.push(`  bundle: main chunk B ${b.rawKB} kB raw, ${b.gzipKB} kB gzip; against A ${b.deltaRawKB >= 0 ? '+' : ''}${b.deltaRawKB} raw, ${b.deltaGzipKB >= 0 ? '+' : ''}${b.deltaGzipKB} gzip${b.overWarning ? `; over Vite's ${BUNDLE.warnKB} kB warning by ${b.overWarningKB}` : ''} (report-only here; --report gates gzip)`);
   }
-  if (data.mode === 'report' || data.mode === 'governor') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
+  if (data.mode === 'report' || data.mode === 'governor' || data.scenario === 'modal') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
       lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.sourceVerdict ? ` (it read ${p.sourceVerdict} after ${p.sourceCycles})` : ''}${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
@@ -2163,7 +2314,7 @@ function printSummary(data) {
 }
 
 async function main() {
-  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor', 'dusk', 'governor', 'gpuheavy'] });
+  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor', 'dusk', 'governor', 'gpuheavy', 'noTaps', 'pairs'] });
   if (args.help) {
     process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 46).join('\n') + '\n');
     return 0;

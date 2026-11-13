@@ -19,6 +19,9 @@ fx.register('halfShadow', { desktop: false, low: true });
 // P2-3). Desktop only: the low tier builds no composer. With the switch off
 // the threshold stays at its day value, which keeps today's warm night haze.
 fx.register('bloomNight', { desktop: true, low: false });
+// E4: behind a modal the low tier renders one rAF frame in three, freezes the
+// shadow map and pauses the governor. Desktop is unchanged.
+fx.register('modalDivisor', { desktop: false, low: true });
 /** What getGovernorState() returns: a read-only snapshot for the probes. */
 export interface GovernorState {
   renderScale: number;
@@ -226,6 +229,31 @@ export class SimpleRenderer {
     }
   })();
   private gpuHeavy: { scene: THREE.Scene; camera: THREE.OrthographicCamera } | null = null;
+  private static readonly GPU_HEAVY_DRAWS = 40;
+
+  /**
+   * E4: window 'ds:modal' {open, id, zone?} (PanelManager) says whether a
+   * modal is on top. While one is and the 'modalDivisor' switch is on (the
+   * low tier's default), the loop renders 1 rAF frame in MODAL_DIVISOR,
+   * freezes the shadow map through modalFrozen (OR-ed with the interior and
+   * intro freeze, so a modal's close never clears theirs) and pauses the
+   * governor. No event, no change.
+   */
+  private modalOpen = false;
+  private modalApplied = false;
+  private modalFrozen = false;
+  private modalFrame = 0;
+  private static readonly MODAL_DIVISOR = 3;
+  /** The last rendered frame's CPU seconds (E3's sample), for the divisor's time floor. */
+  private lastFrameCpu = 0;
+  private readonly _onModal = (e: Event): void => {
+    const d = (e as CustomEvent<{ open?: boolean } | null>).detail;
+    this.modalOpen = !!(d && d.open);
+  };
+  /** The interior/intro freeze and the modal freeze, composed. */
+  private get depthFrozen(): boolean {
+    return this.shadowFrozen || this.modalFrozen;
+  }
   // Stable handler ref so dispose() can actually detach the resize listener
   // (an inline arrow at addEventListener cannot be removed).
   private readonly _onResize = (): void => this.onWindowResize();
@@ -286,6 +314,9 @@ export class SimpleRenderer {
 
     // Responsive resize
     window.addEventListener('resize', this._onResize);
+    // E4: PanelManager's modal state (contract: the 'ds:modal' name and its
+    // `open` field). Removed in dispose().
+    window.addEventListener('ds:modal', this._onModal);
 
     // WebGL context-loss resilience. Under GPU memory pressure a mobile browser
     // can drop the context: the canvas goes black while the DOM HUD stays on
@@ -597,10 +628,31 @@ export class SimpleRenderer {
       // game speed is unchanged. The 1ms tolerance absorbs rAF timestamp
       // jitter so a healthy cadence doesn't spuriously drop to half rate.
       let wallDt = rawDt;
-      if (this.frameCapFps > 0) {
+      // E4: a modal opened or closed since the last frame (the event, or the
+      // perf gate's --fx flipping the switch).
+      const modal = this.modalOpen && fx.on('modalDivisor');
+      if (modal !== this.modalApplied) this.applyModal(modal);
+      if (this.frameCapFps > 0 || this.modalApplied) {
         this.frameAccum += rawDt;
-        const interval = 1 / this.frameCapFps;
-        if (this.frameAccum < interval - SimpleRenderer.FRAME_CAP_TOLERANCE_S) return;
+        if (this.frameCapFps > 0) {
+          const interval = 1 / this.frameCapFps;
+          if (this.frameAccum < interval - SimpleRenderer.FRAME_CAP_TOLERANCE_S) return;
+        }
+        // Behind a modal: 1 in MODAL_DIVISOR of the frames the cap lets
+        // through, AND at least MODAL_DIVISOR x the last frame's own CPU time
+        // of wall per rendered frame. The count alone is the third of the rate
+        // on a device with headroom; on a CPU-bound one the skipped rAF ticks
+        // are ~0 ms each and the costly frames ran back to back, MEASURED on
+        // the 4x low tier behind Projects: 890 ms/s of main-thread busy with
+        // the count alone. The skipped frames run neither the update nor
+        // render(), and their time stays in frameAccum for the one that does.
+        if (
+          this.modalApplied &&
+          (++this.modalFrame < SimpleRenderer.MODAL_DIVISOR ||
+            this.frameAccum < SimpleRenderer.MODAL_DIVISOR * this.lastFrameCpu)
+        )
+          return;
+        this.modalFrame = 0;
         wallDt = this.frameAccum;
         // ZERO, not `%= interval`: wallDt above consumed the WHOLE
         // accumulator, so keeping the remainder re-injected it into the next
@@ -643,7 +695,8 @@ export class SimpleRenderer {
 
       // Render
       this.render();
-      this.feedCpu((performance.now() - cpuT0) / 1000, wallDt);
+      this.lastFrameCpu = (performance.now() - cpuT0) / 1000;
+      this.feedCpu(this.lastFrameCpu, wallDt);
     };
 
     animate();
@@ -735,7 +788,7 @@ export class SimpleRenderer {
    * still measures; armGovernor discards it with the rest.
    */
   private feedCpu(cpuS: number, wallDt: number): void {
-    if (wallDt <= 0 || !(cpuS >= 0)) return;
+    if (wallDt <= 0 || !(cpuS >= 0) || this.modalApplied) return;
     if (wallDt > SimpleRenderer.GOVERNOR_MAX_DT && this.stallRun < 3) return;
     const dt = Math.min(wallDt, SimpleRenderer.GOVERNOR_MAX_DT);
     const alpha = Math.min(0.25, 1 - Math.exp(-dt / 0.75));
@@ -759,8 +812,27 @@ export class SimpleRenderer {
       cpuEma: this.cpuEma,
       qualityRung: this.qualityRung,
       cpuBound: this.cpuBound,
-      modalDivisor: 1,
+      modalDivisor: this.modalApplied ? SimpleRenderer.MODAL_DIVISOR : 1,
     };
+  }
+
+  /**
+   * E4: enter or leave the modal divisor. Entering freezes the shadow map
+   * (modalFrozen, composed with the interior/intro freeze in
+   * applyShadowPolicy) and starts the 1-in-MODAL_DIVISOR count. Leaving
+   * unfreezes, refreshes the map once unless the interior or intro freeze
+   * still holds, and discards what the governor measured while the world ran
+   * at a third of the rate; the rung and the armed state are kept.
+   */
+  private applyModal(on: boolean): void {
+    this.modalApplied = on;
+    this.modalFrozen = on;
+    this.modalFrame = 0;
+    this.applyShadowPolicy();
+    if (!on) {
+      if (!this.shadowFrozen) this.renderer.shadowMap.needsUpdate = true;
+      this.resetGovernorClocks();
+    }
   }
 
   /**
@@ -773,6 +845,9 @@ export class SimpleRenderer {
    */
   private updateAdaptiveResolution(wallDt: number): void {
     if (wallDt <= 0) return;
+    // E4: paused behind a modal on the low tier: measure nothing, decide
+    // nothing (applyModal resets the clocks on the way out).
+    if (this.modalApplied) return;
     // TRUE WALL TIME, BOUNDED — not the physics dt.
     //
     // This used to be handed `Math.min(wallDt, 0.05)`, the clamp that stops a
@@ -994,7 +1069,7 @@ export class SimpleRenderer {
     // fresh. Interior freeze still wins (autoUpdate off, no re-arm).
     this.halfShadowApplied = this.alwaysHalfShadow;
     this.renderer.shadowMap.autoUpdate =
-      !this.shadowFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow;
+      !this.depthFrozen && this.qualityRung < 2 && !this.alwaysHalfShadow;
   }
 
   /**
@@ -1175,20 +1250,25 @@ export class SimpleRenderer {
       const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
       const mat = new THREE.ShaderMaterial({
         vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
-        // uZero is 0 at run time; as a uniform the compiler cannot fold the
-        // loop away the way it would a literal 0.0.
-        uniforms: { uZero: { value: 0 } },
+        // uZero is 0 and uIters the loop count at run time: as uniforms the
+        // compiler can neither fold the loop away (a literal 0.0 lets it) nor
+        // unroll it (a literal bound made the D3D compile a no-op pass).
+        uniforms: { uZero: { value: 0 }, uIters: { value: 4096 } },
         fragmentShader: `
           uniform float uZero;
+          uniform int uIters;
           void main() {
             vec2 p = gl_FragCoord.xy * 0.001;
             float a = 0.0;
-            for (int i = 0; i < 160; i++) {
+            for (int i = 0; i < 65536; i++) {
+              if (i >= uIters) break;
               a += sin(p.x * float(i) + a) * cos(p.y * float(i) - a);
             }
-            gl_FragColor = vec4(vec3(a * uZero), 0.0);
+            gl_FragColor = vec4(vec3(a * uZero), 1.0);
           }`,
+        // Additive with a zero colour adds nothing, whatever the alpha.
         blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
         depthTest: false,
         depthWrite: false,
         transparent: true,
@@ -1200,7 +1280,13 @@ export class SimpleRenderer {
     }
     const auto = this.renderer.autoClear;
     this.renderer.autoClear = false;
-    this.renderer.render(this.gpuHeavy.scene, this.gpuHeavy.camera);
+    // Several short draws rather than one long one: a single multi-second draw
+    // on a weak GPU would trip the driver's timeout. MEASURED on the dev rig's
+    // GPU: one 640-iteration pass added 0.24 ms, so a GPU-bound case needs
+    // about 20 ms of passes there.
+    for (let i = 0; i < SimpleRenderer.GPU_HEAVY_DRAWS; i++) {
+      this.renderer.render(this.gpuHeavy.scene, this.gpuHeavy.camera);
+    }
     this.renderer.autoClear = auto;
   }
 
@@ -1258,7 +1344,7 @@ export class SimpleRenderer {
     // moves slowly enough that a one-frame-stale map is invisible. Suspended
     // by the interior freeze — a half-rate depth pass indoors is still a
     // depth pass indoors.
-    if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.shadowFrozen) {
+    if ((this.qualityRung >= 2 || this.alwaysHalfShadow) && !this.depthFrozen) {
       this.shadowFramePhase ^= 1;
       if (this.shadowFramePhase === 1) this.renderer.shadowMap.needsUpdate = true;
     }
@@ -1467,6 +1553,7 @@ export class SimpleRenderer {
   public dispose(): void {
     this.stopRenderLoop();
     window.removeEventListener('resize', this._onResize);
+    window.removeEventListener('ds:modal', this._onModal);
     if (this.gpuHeavy) {
       const q = this.gpuHeavy.scene.children[0] as THREE.Mesh | undefined;
       q?.geometry.dispose();
