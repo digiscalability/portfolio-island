@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as THREE from 'three';
+import ts from 'typescript';
 import { describe, expect, test, vi } from 'vitest';
 
 import { GameScene } from '../GameScene';
@@ -905,5 +906,92 @@ describe('the bird feed says why it did not throw (P2-B7)', () => {
     sc.player = {};
     sc.envCycle = { getDayFactor: () => 0.1 };
     expect(sc.throwBirdFeedReason()).toBe('night');
+  });
+});
+
+describe('Multiplayer.ts has no import-time side effects (wave-3 bundle carry-over)', () => {
+  // A's wave-3 lazy load moves `import { Multiplayer }` behind a dynamic
+  // import. That is only safe if evaluating the module does nothing: no
+  // listeners, timers, network, DOM or Firebase until `new Multiplayer()` and
+  // connect(). Its dependencies (Materials, Moderation, SimplePlayer) are
+  // already loaded eagerly by main-simple, so only this module's own top
+  // level matters.
+  test('the top level holds only imports and declarations', () => {
+    // Parsed, not brace-counted: strings and regexes in the class body hold
+    // brackets and slashes that throw a character scan off.
+    const sf = ts.createSourceFile('Multiplayer.ts', src('Multiplayer.ts'), ts.ScriptTarget.Latest);
+    const loose = sf.statements
+      .filter(
+        (st) =>
+          !ts.isImportDeclaration(st) &&
+          !ts.isInterfaceDeclaration(st) &&
+          !ts.isTypeAliasDeclaration(st) &&
+          !ts.isClassDeclaration(st) &&
+          !ts.isFunctionDeclaration(st) &&
+          !(
+            ts.isEnumDeclaration(st) &&
+            st.modifiers?.some((m) => m.kind === ts.SyntaxKind.ConstKeyword)
+          ),
+      )
+      .map((st) => st.getText(sf).slice(0, 80));
+    expect(loose).toEqual([]);
+    // No static field initialisers run code at class definition either.
+    const cls = sf.statements.filter(ts.isClassDeclaration);
+    const staticInits = cls.flatMap((c) =>
+      c.members
+        .filter(
+          (m) =>
+            (ts.isPropertyDeclaration(m) && m.initializer) || ts.isClassStaticBlockDeclaration(m),
+        )
+        .filter(
+          (m) =>
+            ts.isClassStaticBlockDeclaration(m) ||
+            m.modifiers?.some((x) => x.kind === ts.SyntaxKind.StaticKeyword),
+        )
+        .map((m) => m.getText(sf).slice(0, 80)),
+    );
+    expect(
+      staticInits.filter((t) => !/=\s*(-?[\d.]+|'[^']*'|true|false|null)\s*;?$/.test(t)),
+    ).toEqual([]);
+    const s = stripped('Multiplayer.ts');
+    // Firebase stays behind connect()'s dynamic imports.
+    expect(s).not.toMatch(/^import[^\n]*(firebase|firebaseClient)/m);
+    expect(s).toContain("import('./firebaseClient')");
+    expect(s).toContain("import('firebase/database')");
+  });
+
+  test('evaluating the module adds no listener, timer, frame or request', async () => {
+    // Dependencies first, so only Multiplayer's own evaluation is measured.
+    // Materials is already loaded through the static GameScene import above.
+    await import('../Moderation');
+    await import('../SimplePlayer');
+    const spies = [
+      vi.spyOn(window, 'addEventListener'),
+      vi.spyOn(document, 'addEventListener'),
+      vi.spyOn(globalThis, 'setTimeout'),
+      vi.spyOn(globalThis, 'setInterval'),
+      vi.spyOn(globalThis, 'requestAnimationFrame'),
+      vi.spyOn(globalThis, 'fetch'),
+      vi.spyOn(document, 'createElement'),
+    ];
+    const fb = vi.fn();
+    vi.doMock('../firebaseClient', () => {
+      fb();
+      return {};
+    });
+    vi.doMock('firebase/database', () => {
+      fb();
+      return {};
+    });
+    try {
+      const mod = await import('../Multiplayer?side-effects');
+      expect(typeof mod.Multiplayer).toBe('function');
+      for (const s of spies) expect(s, s.getMockName()).not.toHaveBeenCalled();
+      expect(fb).not.toHaveBeenCalled();
+    } finally {
+      for (const s of spies) s.mockRestore();
+      vi.doUnmock('../firebaseClient');
+      vi.doUnmock('firebase/database');
+    }
   });
 });
