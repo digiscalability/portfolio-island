@@ -8,6 +8,9 @@
 //   perf:gate -- --ab <distA> <distB> --ports pA,pB [--cycles 6]   whole build B against A, ABAB, fresh context per cycle
 //   perf:gate -- --rejudge <perf-gate-ab.json>           the verdict maths again on a saved A/B's loads (no browser)
 //   perf:gate -- --dist dist --port 5191 --dusk          the dusk check alone: ?hour=17, then the clock to 17.5 after the warm
+//   perf:gate -- --dist dist --port 5191 --governor      E3: the lowtier4x profile (390x844 DPR 2 touch, 4x CPU, no timer
+//                                                         queries), governor live: renderScale and fps after 30 s
+//   perf:gate -- --dist dist --port 5191 --gpuheavy      E3: the 1x low tier with ?gpuheavy=1: renderScale under 0.9 within 20 s
 //   add --seed to compare window.__dsSeedDraws with the subject's test/golden/seedDraws.json (--golden <path> overrides)
 //   add --dusk to --ab for the dusk check on each side (side B is held to it)
 //   --profiles desktop,lowtier,startup  (default: all three; --fx and --dusk use desktop,lowtier)
@@ -1906,6 +1909,77 @@ async function modeFx(args) {
   return data;
 }
 
+// E3: the 4x low tier. 390x844, DPR 2, touch, 4x CPU, GPU timer queries off
+// (they inflate throttled CPU time by ~15%, as for 'startup').
+const LOWTIER4X = () => ({ ...lib.profile('lowtier'), name: 'lowtier4x', cpu: 4 });
+/** The governor's state: E3's snapshot where the build has it, else the private fields. */
+const GOV_STATE = () => {
+  const sr = window.__app.renderer;
+  if (typeof sr.getGovernorState === 'function') return { ...sr.getGovernorState(), via: 'getGovernorState' };
+  return { renderScale: sr.renderScale, fpsEma: sr.fpsEma, cpuEma: sr.cpuEma ?? null, qualityRung: sr.qualityRung, cpuBound: sr.cpuBound ?? null, modalDivisor: null, via: 'fields' };
+};
+// E3's bars: on the 4x low tier after 30 s the scale is 0.9 or more (from
+// 0.48 on wave-2 main) and 16 fps or more; with ?gpuheavy=1 on the low tier
+// at DPR 2 the scale drops below 0.9 within 20 s.
+const GOVERNOR_BARS = { scaleAt30s: 0.9, fpsAt30s: 16, gpuHeavyShedS: 20 };
+
+/**
+ * --governor (E3): one fresh load with the governor LIVE (never pinned). The
+ * default is the lowtier4x profile, idle at the spawn after the card: the
+ * governor state each second for 30 s, then renderScale and the delivered fps
+ * over the last 5 s. --gpuheavy instead boots the 1x low tier with
+ * ?gpuheavy=1 (one extra full-screen pass) and records when renderScale
+ * first drops below 0.9.
+ */
+async function modeGovernor(args) {
+  const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
+  const browser = await lib.launch();
+  const heavy = !!args.gpuheavy;
+  const base = heavy ? lib.profile('lowtier') : LOWTIER4X();
+  const profObj = heavy ? { ...base, name: 'lowtier-gpuheavy', query: `${base.query || ''}&gpuheavy=1` } : base;
+  const seconds = Number(args.seconds || (heavy ? 20 : 30));
+  const data = { mode: 'governor', profile: profObj.name, cpu: profObj.cpu, seconds, bars: GOVERNOR_BARS, samples: [], checks: [], leaks: [], signUpMissing: 0 };
+  try {
+    const meter = await lib.hostLoadMeter(browser);
+    const s = await lib.openSession(browser, profObj, { init: [GATE_INIT({ nogpu: true })] });
+    const { page } = s;
+    try {
+      await bootPage(page, server.url, profObj, args.hour || '12');
+      await page.click(`${lib.WELCOME} button[data-dismiss]`).catch(() => {});
+      const t0 = Date.now();
+      for (let i = 1; i <= seconds; i++) {
+        await page.waitForTimeout(Math.max(0, i * 1000 - (Date.now() - t0)));
+        data.samples.push({ s: i, ...(await page.evaluate(GOV_STATE)) });
+      }
+      // Delivered app frames over the last 5 s (the gate's per-frame hook).
+      data.fpsLast5s = await page.evaluate(() => {
+        const now = performance.now();
+        return +(window.__gate.frames.filter((f) => f.t >= now - 5000).length / 5).toFixed(1);
+      });
+    } finally {
+      const load = await meter.stop();
+      data.otherBusyPct = load.otherBusyPct;
+      await s.close({ waitSignUpMs: 20000 });
+      if (s.net.leaks.length) data.leaks.push(...s.net.leaks);
+      if (!s.net.signUpSeen && !s.net.bootProofSeen) data.signUpMissing++;
+    }
+  } finally {
+    await browser.close().catch(() => {});
+    await server.stop();
+  }
+  const last = data.samples[data.samples.length - 1] || {};
+  const check = (name, pass, value, expect) => data.checks.push({ name, pass, value, expect });
+  if (heavy) {
+    const first = data.samples.find((x) => x.renderScale < GOVERNOR_BARS.scaleAt30s);
+    check(`lowtier ?gpuheavy=1: renderScale under ${GOVERNOR_BARS.scaleAt30s} within ${GOVERNOR_BARS.gpuHeavyShedS} s`, !!first && first.s <= GOVERNOR_BARS.gpuHeavyShedS, first ? `${first.renderScale} at ${first.s} s` : `never (last ${last.renderScale})`, `<= ${GOVERNOR_BARS.gpuHeavyShedS} s`);
+  } else {
+    check(`lowtier4x: renderScale after ${seconds} s`, last.renderScale >= GOVERNOR_BARS.scaleAt30s, last.renderScale, `>= ${GOVERNOR_BARS.scaleAt30s} (wave-2 main: 0.48)`);
+    check(`lowtier4x: fps after ${seconds} s`, data.fpsLast5s >= GOVERNOR_BARS.fpsAt30s, data.fpsLast5s, `>= ${GOVERNOR_BARS.fpsAt30s}`);
+  }
+  data.verdict = data.leaks.length ? 'fail-closed' : data.signUpMissing ? 'inconclusive' : data.checks.every((c) => c.pass) ? 'pass' : 'fail';
+  return data;
+}
+
 async function modeReport(args) {
   const server = await lib.serve({ base: args.base, dist: args.dist, port: args.port });
   const browser = await lib.launch();
@@ -2045,7 +2119,7 @@ function printSummary(data) {
     const b = data.bundle.B;
     lines.push(`  bundle: main chunk B ${b.rawKB} kB raw, ${b.gzipKB} kB gzip; against A ${b.deltaRawKB >= 0 ? '+' : ''}${b.deltaRawKB} raw, ${b.deltaGzipKB >= 0 ? '+' : ''}${b.deltaGzipKB} gzip${b.overWarning ? `; over Vite's ${BUNDLE.warnKB} kB warning by ${b.overWarningKB}` : ''} (report-only here; --report gates gzip)`);
   }
-  if (data.mode === 'report') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
+  if (data.mode === 'report' || data.mode === 'governor') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
       lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.sourceVerdict ? ` (it read ${p.sourceVerdict} after ${p.sourceCycles})` : ''}${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
@@ -2089,9 +2163,9 @@ function printSummary(data) {
 }
 
 async function main() {
-  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor', 'dusk'] });
+  const args = lib.parseArgs(process.argv.slice(2), { multi: ['ab'], bool: ['seed', 'help', 'recordFloor', 'dusk', 'governor', 'gpuheavy'] });
   if (args.help) {
-    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 43).join('\n') + '\n');
+    process.stdout.write(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 46).join('\n') + '\n');
     return 0;
   }
   const out = lib.outDir(args, 'perf-gate');
@@ -2102,9 +2176,10 @@ async function main() {
     else if (args.ab) data = await modeAB(args);
     else if (args.fx) data = await modeFx(args);
     else if (args.dusk) data = await modeDusk(args);
+    else if (args.governor || args.gpuheavy) data = await modeGovernor(args);
     else data = await modeReport(args);
   } catch (e) {
-    data = { mode: args.rejudge ? 'rejudge' : args.ab ? 'ab' : args.fx ? 'fx' : args.dusk ? 'dusk' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
+    data = { mode: args.rejudge ? 'rejudge' : args.ab ? 'ab' : args.fx ? 'fx' : args.dusk ? 'dusk' : args.governor || args.gpuheavy ? 'governor' : 'report', verdict: 'inconclusive', error: String((e && e.stack) || e).slice(0, 2000), profiles: {} };
   }
   data.startedAt = startedAt;
   data.finishedAt = new Date().toISOString();

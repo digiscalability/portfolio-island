@@ -19,6 +19,17 @@ fx.register('halfShadow', { desktop: false, low: true });
 // P2-3). Desktop only: the low tier builds no composer. With the switch off
 // the threshold stays at its day value, which keeps today's warm night haze.
 fx.register('bloomNight', { desktop: true, low: false });
+/** What getGovernorState() returns: a read-only snapshot for the probes. */
+export interface GovernorState {
+  renderScale: number;
+  fpsEma: number;
+  /** Smoothed CPU seconds per rendered frame (renderCallback + governor + render). */
+  cpuEma: number;
+  qualityRung: number;
+  cpuBound: boolean;
+  /** 3 while the modal divisor holds (E4), else 1. */
+  modalDivisor: number;
+}
 
 /**
  * SimpleRenderer
@@ -190,6 +201,31 @@ export class SimpleRenderer {
     if (this.halfShadowParam !== null) return this.halfShadowParam;
     return this.lowTier && fx.on('halfShadow');
   }
+
+  /**
+   * E3: CPU time per rendered frame (renderCallback + updateAdaptiveResolution
+   * + render, two performance.now() reads), smoothed like fpsEma. When it is
+   * 0.85 of the target frame interval or more at a decision, the frame is
+   * bound by the main thread, not the GPU: shedding resolution buys nothing
+   * there (the low tier at 4x CPU walked to a 0.48 scale and stayed slow), so
+   * the governor holds the scale up and sheds rungs instead.
+   */
+  private cpuEma = 0;
+  private cpuBound = false;
+  private static readonly CPU_BOUND_RATIO = 0.85;
+  /** Floor and claw-back step for the render scale while CPU-bound. */
+  private static readonly CPU_BOUND_SCALE = 0.9;
+  private static readonly CPU_BOUND_CLAW = 0.05;
+  /** ?gpuheavy=1 adds one full-screen pass: a GPU-bound test case for the
+   *  gate. Read once, like ?halfshadow; nothing happens without it. */
+  private readonly gpuHeavyParam: boolean = (() => {
+    try {
+      return new URLSearchParams(window.location.search).get('gpuheavy') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  private gpuHeavy: { scene: THREE.Scene; camera: THREE.OrthographicCamera } | null = null;
   // Stable handler ref so dispose() can actually detach the resize listener
   // (an inline arrow at addEventListener cannot be removed).
   private readonly _onResize = (): void => this.onWindowResize();
@@ -582,6 +618,11 @@ export class SimpleRenderer {
       // would teleport physics/animation on the catch-up frame.
       const deltaTime = Math.min(wallDt, 0.05);
 
+      // E3: the frame's CPU time, from here to the end of render() (two reads,
+      // no allocation). The governor below decides on the previous frame's
+      // average; this frame's sample feeds it after the draw.
+      const cpuT0 = performance.now();
+
       // Update game logic
       if (this.renderCallback) {
         this.renderCallback(deltaTime);
@@ -602,6 +643,7 @@ export class SimpleRenderer {
 
       // Render
       this.render();
+      this.feedCpu((performance.now() - cpuT0) / 1000, wallDt);
     };
 
     animate();
@@ -684,6 +726,41 @@ export class SimpleRenderer {
     const target = Math.min(capped, delivered);
     this.fpsLowThreshold = target * 0.75; // = 45 at 60Hz, same ratio as before
     this.fpsHighThreshold = target * 0.95; // = 57 at 60Hz
+  }
+
+  /**
+   * E3: smooth one frame's CPU seconds into cpuEma with fpsEma's time-based
+   * alpha, skipping an isolated stall the way fpsEma does (stallRun was
+   * updated by this frame's updateAdaptiveResolution). Disarmed, the EMA
+   * still measures; armGovernor discards it with the rest.
+   */
+  private feedCpu(cpuS: number, wallDt: number): void {
+    if (wallDt <= 0 || !(cpuS >= 0)) return;
+    if (wallDt > SimpleRenderer.GOVERNOR_MAX_DT && this.stallRun < 3) return;
+    const dt = Math.min(wallDt, SimpleRenderer.GOVERNOR_MAX_DT);
+    const alpha = Math.min(0.25, 1 - Math.exp(-dt / 0.75));
+    this.cpuEma += (cpuS - this.cpuEma) * alpha;
+  }
+
+  /**
+   * E3: the target frame interval the governor holds, in seconds: the rate
+   * applyRefreshEstimate derived (fpsLowThreshold = target x 0.75), not a
+   * fixed 1/60.
+   */
+  private targetInterval(): number {
+    return 0.75 / this.fpsLowThreshold;
+  }
+
+  /** Read-only governor snapshot for the probes (contract E3/E4 to probes). */
+  public getGovernorState(): GovernorState {
+    return {
+      renderScale: this.renderScale,
+      fpsEma: this.fpsEma,
+      cpuEma: this.cpuEma,
+      qualityRung: this.qualityRung,
+      cpuBound: this.cpuBound,
+      modalDivisor: 1,
+    };
   }
 
   /**
@@ -793,9 +870,22 @@ export class SimpleRenderer {
     // machine sits permanently at 0.6 effective DPR.
     const scaleFloor = Math.min(0.9, this.dprFloor / this.dprCap);
     const prev = this.renderScale;
+    // E3: CPU-BOUND. At 0.85 of the target interval or more the frame is
+    // spent on the main thread, and fewer pixels buy nothing back: hold the
+    // scale up and go straight to the rungs (rungStep, as below).
+    const cpuBound = this.cpuEma >= SimpleRenderer.CPU_BOUND_RATIO * this.targetInterval();
+    this.cpuBound = cpuBound;
     if (this.fpsEma < this.fpsLowThreshold) {
       this.lowStreak += 1;
-      if (this.renderScale > scaleFloor && this.lowStreak >= 2) {
+      if (cpuBound) {
+        if (
+          this.lowStreak >= 2 &&
+          this.qualityRung < SimpleRenderer.MAX_QUALITY_RUNG &&
+          this.rungCooldown >= SimpleRenderer.RUNG_ENGAGE_COOLDOWN_S
+        ) {
+          this.setQualityRung(this.rungStep(1));
+        }
+      } else if (this.renderScale > scaleFloor && this.lowStreak >= 2) {
         // Struggling, and for a SECOND consecutive decision — one bad second
         // (a shader compile, walking into a dense district) is not a reason
         // to drop resolution. Shed 0.08/decision against a 0.1 restore, so
@@ -853,6 +943,15 @@ export class SimpleRenderer {
         // ...then claw resolution back gently
         this.renderScale = Math.min(1, this.renderScale + 0.1);
       }
+    }
+    if (cpuBound) {
+      // Hold at max(0.9, scaleFloor) or above, and claw toward 1.0 at +0.05 a
+      // decision whatever the rung (the +0.1 above stays gated on rung 0).
+      const hold = Math.max(SimpleRenderer.CPU_BOUND_SCALE, scaleFloor);
+      this.renderScale = Math.min(
+        1,
+        Math.max(hold, this.renderScale, prev + SimpleRenderer.CPU_BOUND_CLAW),
+      );
     }
     if (this.renderScale !== prev) {
       const effectiveDpr = this.dprCap * this.renderScale;
@@ -928,7 +1027,18 @@ export class SimpleRenderer {
   public armGovernor(): void {
     if (this.governorArmed) return;
     this.governorArmed = true;
+    this.resetGovernorClocks();
+  }
+
+  /**
+   * Discard what the governor has measured and restart its decision clocks;
+   * governorArmed and qualityRung are kept. armGovernor's reset (the intro is
+   * not representative), and E4's on a modal's close (the world behind it ran
+   * at a third of the rate).
+   */
+  private resetGovernorClocks(): void {
     this.fpsEma = 60;
+    this.cpuEma = 0;
     this.qualityAccum = 0;
     this.rungCooldown = 0;
     this.lowStreak = 0;
@@ -1054,6 +1164,47 @@ export class SimpleRenderer {
   }
 
   /**
+   * ?gpuheavy=1 only (E3's GPU-bound test case): one extra full-screen pass
+   * whose fragment shader burns GPU time per pixel and writes nothing (zero
+   * colour, additive), so the image is unchanged and the cost scales with the
+   * render scale, the lever a GPU-bound frame should pull. Built on first use.
+   */
+  private renderGpuHeavy(): void {
+    if (!this.gpuHeavy) {
+      const scene = new THREE.Scene();
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const mat = new THREE.ShaderMaterial({
+        vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
+        // uZero is 0 at run time; as a uniform the compiler cannot fold the
+        // loop away the way it would a literal 0.0.
+        uniforms: { uZero: { value: 0 } },
+        fragmentShader: `
+          uniform float uZero;
+          void main() {
+            vec2 p = gl_FragCoord.xy * 0.001;
+            float a = 0.0;
+            for (int i = 0; i < 160; i++) {
+              a += sin(p.x * float(i) + a) * cos(p.y * float(i) - a);
+            }
+            gl_FragColor = vec4(vec3(a * uZero), 0.0);
+          }`,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+      });
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+      quad.frustumCulled = false;
+      scene.add(quad);
+      this.gpuHeavy = { scene, camera };
+    }
+    const auto = this.renderer.autoClear;
+    this.renderer.autoClear = false;
+    this.renderer.render(this.gpuHeavy.scene, this.gpuHeavy.camera);
+    this.renderer.autoClear = auto;
+  }
+
+  /**
    * Stop the render loop
    */
   public stopRenderLoop(): void {
@@ -1117,6 +1268,7 @@ export class SimpleRenderer {
     } else {
       this.renderer.render(this.scene, this.camera);
     }
+    if (this.gpuHeavyParam) this.renderGpuHeavy();
 
     // Photo mode: read the drawing buffer in the SAME task as the draw
     // (toBlob snapshots the bitmap at call time; without preserveDrawingBuffer
@@ -1315,6 +1467,12 @@ export class SimpleRenderer {
   public dispose(): void {
     this.stopRenderLoop();
     window.removeEventListener('resize', this._onResize);
+    if (this.gpuHeavy) {
+      const q = this.gpuHeavy.scene.children[0] as THREE.Mesh | undefined;
+      q?.geometry.dispose();
+      (q?.material as THREE.Material | undefined)?.dispose();
+      this.gpuHeavy = null;
+    }
 
     if (this.composer) {
       this.composer.dispose();

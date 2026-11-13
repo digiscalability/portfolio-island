@@ -502,3 +502,125 @@ describe('the intro-lite swoop sheds the dominant scene cost, then restores it',
     expect(body).not.toContain('setPostProcessingEnabled');
   });
 });
+
+// E3: the governor knows when the frame is CPU-bound. Driven on a bare
+// instance (no GL context): the fields the decision reads, a pixel-ratio
+// counter for three's renderer, and the decision called directly.
+type Gov = Record<string, unknown> & { ratios: number[] };
+function governor(
+  o: { lowTier?: boolean; renderScale?: number; cpuEma?: number; fpsEma?: number } = {},
+): Gov {
+  const g = Object.create(SimpleRenderer.prototype) as Gov;
+  g.ratios = [];
+  Object.assign(g, {
+    renderer: {
+      setPixelRatio: (r: number) => g.ratios.push(r),
+      shadowMap: { autoUpdate: true, needsUpdate: false },
+    },
+    composer: undefined,
+    bloomPass: undefined,
+    scene: { getIsland: () => ({ setGrassBudget: () => undefined }) },
+    dprCap: 2,
+    dprFloor: 0.6,
+    renderScale: o.renderScale ?? 1,
+    fpsEma: o.fpsEma ?? 14,
+    cpuEma: o.cpuEma ?? 0,
+    cpuBound: false,
+    qualityAccum: 0,
+    lowStreak: 0,
+    stallRun: 0,
+    governorArmed: true,
+    governorArmAccum: 0,
+    rungCooldown: 99,
+    qualityRung: 0,
+    fpsLowThreshold: 45,
+    fpsHighThreshold: 57,
+    lowTier: !!o.lowTier,
+    halfShadowParam: o.lowTier ? true : null,
+    halfShadowApplied: false,
+    shadowFrozen: false,
+  });
+  return g;
+}
+const gcall = (g: Gov, m: string, ...a: unknown[]): unknown =>
+  (SimpleRenderer.prototype as unknown as Record<string, (...x: unknown[]) => unknown>)[m].apply(
+    g,
+    a,
+  );
+/** One decision per simulated second: frames of `dt` with their CPU share fed, the EMA held where the case pins it. */
+function decide(g: Gov, seconds: number, opts: { fps: number; cpuS: number }): void {
+  // A hair over 1/fps, so float rounding cannot leave a second's frames just under 1.0.
+  const dt = 1 / opts.fps + 1e-7;
+  for (let s = 0; s < seconds; s++)
+    for (let f = 0; f < opts.fps; f++) {
+      gcall(g, 'updateAdaptiveResolution', dt);
+      gcall(g, 'feedCpu', opts.cpuS, dt);
+    }
+}
+
+describe('the governor knows when the frame is CPU-bound (E3)', () => {
+  test('the target interval is the one applyRefreshEstimate derived, not 1/60', () => {
+    const g = governor();
+    expect(gcall(g, 'targetInterval')).toBeCloseTo(1 / 60, 6);
+    g.fpsLowThreshold = 33.75; // a 90 Hz phone under the 60 fps cap (45 delivered)
+    expect(gcall(g, 'targetInterval')).toBeCloseTo(1 / 45, 6);
+  });
+
+  test('a CPU-bound low tier at 0.48 is lifted to 0.9 and claws toward 1 by 0.05', () => {
+    // 4x CPU: 14 fps, and the frame is all main thread (70 ms of a 71 ms frame).
+    const g = governor({ lowTier: true, renderScale: 0.48, cpuEma: 0.07, fpsEma: 14 });
+    decide(g, 1, { fps: 14, cpuS: 0.07 });
+    expect(g.cpuBound).toBe(true);
+    expect(g.renderScale).toBeCloseTo(0.9, 6);
+    decide(g, 1, { fps: 14, cpuS: 0.07 });
+    expect(g.renderScale).toBeCloseTo(0.95, 6);
+    decide(g, 30, { fps: 14, cpuS: 0.07 });
+    expect(g.renderScale).toBe(1);
+    // ...and the ladder still sheds: on the low tier rungs 1 and 2 are inert
+    // (no composer; half-rate shadows already on), so it goes to rung 3.
+    expect(g.qualityRung).toBe(3);
+  });
+
+  test('a GPU-bound frame sheds resolution exactly as before', () => {
+    // 14 fps with a 6 ms main thread: the GPU is the wall.
+    const g = governor({ lowTier: true, renderScale: 1, cpuEma: 0.006, fpsEma: 14 });
+    decide(g, 4, { fps: 14, cpuS: 0.006 });
+    expect(g.cpuBound).toBe(false);
+    expect(g.renderScale).toBeLessThan(0.9);
+  });
+
+  test('the +0.1 claw-back stays gated on rung 0', () => {
+    const g = governor({ renderScale: 0.7, cpuEma: 0.001, fpsEma: 60 });
+    g.qualityRung = 2;
+    g.rungCooldown = 0;
+    decide(g, 1, { fps: 60, cpuS: 0.001 });
+    expect(g.renderScale).toBe(0.7);
+  });
+
+  test('cpuEma skips an isolated stall, as fpsEma does, and armGovernor resets it', () => {
+    const g = governor({ cpuEma: 0.01 });
+    g.stallRun = 1;
+    gcall(g, 'feedCpu', 2.0, 2.0);
+    expect(g.cpuEma).toBe(0.01);
+    g.governorArmed = false;
+    gcall(g, 'armGovernor');
+    expect(g.cpuEma).toBe(0);
+    expect(g.fpsEma).toBe(60);
+  });
+
+  test('two performance.now() reads frame the CPU sample; ?gpuheavy is a URL param read once', () => {
+    const s = src('SimpleRenderer.ts');
+    const loop = s.slice(
+      s.indexOf('public startRenderLoop('),
+      s.indexOf('private applyRefreshEstimate'),
+    );
+    expect(loop.match(/performance\.now\(\)/g)).toHaveLength(2);
+    expect(loop.indexOf('const cpuT0 = performance.now();')).toBeLessThan(
+      loop.indexOf('this.renderCallback(deltaTime)'),
+    );
+    expect(loop.indexOf('this.feedCpu(')).toBeGreaterThan(loop.indexOf('this.render();'));
+    expect(s).toContain("new URLSearchParams(window.location.search).get('gpuheavy') === '1'");
+    expect(s).toContain('if (this.gpuHeavyParam) this.renderGpuHeavy();');
+    expect(s).toContain('public getGovernorState(): GovernorState');
+  });
+});
