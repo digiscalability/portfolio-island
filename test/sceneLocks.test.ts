@@ -350,7 +350,17 @@ describe('the arrival trail leads to a villager who talks (B10)', () => {
     const waits = loop.indexOf('if (this.trailCoinWaits(c)) continue;');
     expect(waits).toBeGreaterThan(-1);
     expect(waits).toBeLessThan(loop.indexOf('c.mesh.position.lerp(playerPos'));
-    expect(waits).toBeLessThan(loop.indexOf('if (c.trail) {'));
+    // The pickup (P2-B7 moved it into collectMeadowCoin, with the trail's
+    // bookkeeping) comes after the wait too.
+    const pickup = loop.indexOf('this.collectMeadowCoin(c, time)');
+    expect(pickup).toBeGreaterThan(-1);
+    expect(waits).toBeLessThan(pickup);
+    const g = stripped('GameScene.ts');
+    const from = g.indexOf('private collectMeadowCoin(');
+    const collect = g.slice(from, g.indexOf('private onMeadowCoin', from));
+    expect(from).toBeGreaterThan(-1);
+    expect(collect).toContain('if (c.trail) {');
+    expect(collect).toContain('this.onMeadowCoin?.({ trail: c.trail === true });');
   });
 });
 
@@ -801,5 +811,99 @@ describe('dead code stays gone (wave-2 amendment, older)', () => {
   test('GameScene.hasVillagerWithin is deleted, with its scratch vector', () => {
     expect(src('GameScene.ts')).not.toMatch(/\bhasVillagerWithin\b/);
     expect(src('GameScene.ts')).not.toContain('_nearNpcPos');
+  });
+});
+
+describe('the race compass reads the next gate (P2-B7)', () => {
+  // Behavioural, on a RaceSystem with a hand-made three-gate land circuit
+  // (gate 0 is start and finish). test/raceGate.test.ts is not in
+  // tools/owners.json, so this lives in B's sceneLocks.
+  const R = 75;
+  const dirs = [
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(0.6, 0.8, 0).normalize(),
+    new THREE.Vector3(0, 0.8, 0.6).normalize(),
+  ];
+  const surfaceR = [75.5, 76.25, 77];
+  const make = async (): Promise<
+    import('../RaceSystem').RaceSystem & {
+      circuits: Record<string, unknown>;
+    }
+  > => {
+    const { RaceSystem } = await import('../RaceSystem');
+    const island = { getRadius: () => R } as unknown as ConstructorParameters<typeof RaceSystem>[1];
+    const rs = new RaceSystem(new THREE.Scene(), island, []) as InstanceType<typeof RaceSystem> & {
+      circuits: Record<string, unknown>;
+    };
+    rs.circuits.land = { kind: 'land', dirs, surfaceR, gates: [], rings: [] };
+    return rs;
+  };
+  const at = (d: THREE.Vector3, nudge = 0): THREE.Vector3 =>
+    d
+      .clone()
+      .applyAxisAngle(new THREE.Vector3(1, 0, 0), nudge)
+      .multiplyScalar(R);
+
+  test('null when idle; idx, n and the gate point while racing; null after', async () => {
+    const rs = await make();
+    const out = new THREE.Vector3(9, 9, 9);
+    expect(rs.getNextGate(out)).toBeNull();
+    expect(out.toArray()).toEqual([9, 9, 9]); // untouched
+    // Driving through the start ring arms the run: the next gate is 1.
+    rs.update(0.016, at(dirs[0], 0.001), 'car');
+    rs.update(0.016, at(dirs[0]), 'car');
+    expect(rs.getNextGate(out)).toEqual({ idx: 1, n: 3, kind: 'land' });
+    expect(out.distanceTo(dirs[1].clone().multiplyScalar(surfaceR[1]))).toBeLessThan(1e-9);
+    rs.update(0.016, at(dirs[1]), 'car');
+    expect(rs.getNextGate(out)).toEqual({ idx: 2, n: 3, kind: 'land' });
+    rs.update(0.016, at(dirs[2]), 'car');
+    // Gate 0 again: the finish.
+    expect(rs.getNextGate(out)).toEqual({ idx: 0, n: 3, kind: 'land' });
+    expect(out.distanceTo(dirs[0].clone().multiplyScalar(surfaceR[0]))).toBeLessThan(1e-9);
+    // On foot, the run is abandoned.
+    rs.update(0.016, at(dirs[0]), null);
+    expect(rs.getNextGate(out)).toBeNull();
+  });
+
+  test('GameScene.getRaceNextGate forwards it, null before the races exist', () => {
+    const s = stripped('GameScene.ts');
+    const at = s.indexOf('public getRaceNextGate(');
+    expect(at).toBeGreaterThan(-1);
+    expect(s.slice(at, at + 200)).toContain('return this.races?.getNextGate(out) ?? null;');
+  });
+});
+
+describe('the bird feed says why it did not throw (P2-B7)', () => {
+  test("throwBirdFeed stays a boolean over throwBirdFeedReason's 'ok'", () => {
+    const s = stripped('GameScene.ts');
+    expect(bodyOf(s, 'public throwBirdFeed(): boolean')).toContain(
+      "return this.throwBirdFeedReason() === 'ok';",
+    );
+    const reason = bodyOf(s, 'public throwBirdFeedReason()');
+    for (const r of ["return 'none'", "return 'night'", "return 'sea'", "return 'ok'"]) {
+      expect(reason).toContain(r);
+    }
+    expect(reason).not.toMatch(/return (true|false)/);
+  });
+
+  test('night, no island: the reasons, behaviourally', () => {
+    const init = vi
+      .spyOn(GameScene.prototype as unknown as { initialize: () => Promise<void> }, 'initialize')
+      .mockResolvedValue(undefined);
+    const sc = new GameScene() as unknown as {
+      island: unknown;
+      player: unknown;
+      envCycle: unknown;
+      throwBirdFeedReason(): string;
+      throwBirdFeed(): boolean;
+    };
+    init.mockRestore();
+    sc.island = undefined;
+    expect(sc.throwBirdFeedReason()).toBe('none');
+    expect(sc.throwBirdFeed()).toBe(false);
+    sc.island = {};
+    sc.player = {};
+    sc.envCycle = { getDayFactor: () => 0.1 };
+    expect(sc.throwBirdFeedReason()).toBe('night');
   });
 });

@@ -3970,11 +3970,22 @@ export class GameScene extends THREE.Scene {
    * caller can keep the player's charge.
    */
   public throwBirdFeed(): boolean {
-    if (!this.island || !this.player) return false;
+    return this.throwBirdFeedReason() === 'ok';
+  }
+
+  /**
+   * throwBirdFeed with the reason it did not throw (P2-B7), so the caller
+   * can say why: 'night' (the birds are roosting), 'sea' (the spot ahead is
+   * water), 'none' (nowhere to throw: no island, player or direction yet).
+   * main-simple switches to it in wave 4 (P2-A10) through
+   * `scene.throwBirdFeedReason?.()`.
+   */
+  public throwBirdFeedReason(): 'ok' | 'night' | 'sea' | 'none' {
+    if (!this.island || !this.player) return 'none';
     // Not at night: the ground birds are roosted (scaled to nothing and
     // hidden), so they would pop in at full size, fly over and dissolve on
-    // landing. Returning false keeps the player's charge.
-    if (this.envCycle && this.envCycle.getDayFactor() < 0.3) return false;
+    // landing. Not throwing keeps the player's charge.
+    if (this.envCycle && this.envCycle.getDayFactor() < 0.3) return 'night';
     const origin = this.player.getWorldPosition();
     const up = this._feedUp.copy(origin).normalize();
     // Aim along the camera's tangent forward so the feed lands where you look.
@@ -3984,7 +3995,7 @@ export class GameScene extends THREE.Scene {
       this._feedFwd.copy(this.player.getForwardDirection());
       this._feedFwd.addScaledVector(up, -this._feedFwd.dot(up));
     }
-    if (this._feedFwd.lengthSq() < 1e-4) return false;
+    if (this._feedFwd.lengthSq() < 1e-4) return 'none';
     this._feedFwd.normalize();
     const ang = GameScene.FEED_THROW_DIST / Math.max(1, origin.length());
     this._feedDir
@@ -3996,15 +4007,15 @@ export class GameScene extends THREE.Scene {
     try {
       surf = this.island.sampleSurfaceByDirection(this._feedDir, 0);
     } catch {
-      return false;
+      return 'none';
     }
-    if (surf.position.length() < this.island.seaLevel() + 0.15) return false; // in the sea
+    if (surf.position.length() < this.island.seaLevel() + 0.15) return 'sea'; // in the sea
 
     const time = performance.now() / 1000;
     const pos = this.spawnFeedPile(origin, up, surf.position, surf.normal, 0xd9bd7a, 'bird_feed');
     this.callBirdsToFeed(pos, time);
     this.feedThrowCeremony(pos, time);
-    return true;
+    return 'ok';
   }
 
   /**
@@ -6544,6 +6555,8 @@ export class GameScene extends THREE.Scene {
     }
     F.phase = 'idle';
     if (F.bobber) F.bobber.visible = false;
+    if (this.biteMark) this.biteMark.visible = false;
+    this.releaseFishingBias();
     this.player.setRodHold(false);
     // The rod lingers half a second through the yank, then stows.
     if (this.playerRod) {
@@ -7858,9 +7871,15 @@ export class GameScene extends THREE.Scene {
         F.catchFish.rotation.z += 0.17;
       }
     }
-    if (F.phase === 'idle' || !F.bobber) return;
+    // The bite's '!' shows only while the fish is on (P2-B7).
+    if (this.biteMark && F.phase !== 'bite') this.biteMark.visible = false;
+    if (F.phase === 'idle' || !F.bobber) {
+      this.releaseFishingBias();
+      return;
+    }
     // Walking off cancels the cast (no free idle-fishing from across the map).
     if (this.player.getWorldPosition().distanceTo(F.castFrom) > 5) {
+      this.releaseFishingBias();
       F.phase = 'idle';
       F.bobber.visible = false;
       if (this.playerRod) this.playerRod.visible = false;
@@ -7893,6 +7912,9 @@ export class GameScene extends THREE.Scene {
         this.spawnRipple(F.bobber.position.clone(), 1.2, 1.0);
         this.spawnSpray(F.bobber.position.clone(), F.dir.clone(), 5, 3);
         sfx.splash();
+        // The wait's camera bias starts here; a look input ends it.
+        this.fishBiasYaw0 = this.orbitCamera?.getYawTarget() ?? 0;
+        this.fishBiasReleased = false;
       }
       return;
     }
@@ -7903,9 +7925,13 @@ export class GameScene extends THREE.Scene {
       F.biteUntil = time + 1.6;
       // The bite announces itself: a ring on the water and the camera's soft
       // interest glances at the dipping float.
+      // (P2-B7) A '!' over the float says which press catches it. The cue
+      // stays the blip and the dip: the landing already splashed, and a
+      // second splash here would blur the two.
       this.spawnRipple(F.bobber.position.clone(), 0.8, 0.7);
       this.setInteractionFocus(F.bobber.position, 2.2);
       sfx.blip();
+      this.ensureBiteMark().visible = true;
     } else if (F.phase === 'wait' && time - F.lastRippleAt > 2.4) {
       // Idle rings keep the water alive while you wait.
       F.lastRippleAt = time;
@@ -7918,6 +7944,110 @@ export class GameScene extends THREE.Scene {
         F.biteAt = time + 3 + Math.random() * 5;
       }
     }
+    if (this.biteMark?.visible) {
+      // Above the float's resting height, not riding the dip.
+      this.biteMark.position.copy(F.dir).multiplyScalar(wave + 0.75);
+    }
+    this.updateFishingBias();
+  }
+
+  // ── The fishing bite you can see (P2-B7) ──
+  /** One pooled '!' sprite over the float, built on the first bite (long
+   *  after the seeded window): +1 draw while a fish is on. */
+  private biteMark: THREE.Sprite | null = null;
+  /** The camera's yaw target when the float landed: a look input that
+   *  moves it releases the wait's bias for the rest of the cast. */
+  private fishBiasYaw0 = 0;
+  private fishBiasReleased = true;
+  private fishBiasYawSet = false;
+  private readonly _fishBiasSide = new THREE.Vector3();
+  private readonly _fishBiasAt = new THREE.Vector3();
+  /** About 30 degrees toward the cast side (A's setInterestYaw, when present). */
+  private static readonly FISH_BIAS_YAW = Math.PI / 6;
+
+  private ensureBiteMark(): THREE.Sprite {
+    if (this.biteMark) return this.biteMark;
+    const cv = document.createElement('canvas');
+    cv.width = 64;
+    cv.height = 64;
+    const ctx = cv.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#ffd34a';
+      ctx.strokeStyle = '#1f1a14';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(32, 32, 27, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#1f1a14';
+      ctx.font = 'bold 44px system-ui, "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('!', 32, 34);
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mark = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
+    );
+    mark.scale.setScalar(0.5);
+    mark.visible = false;
+    mark.renderOrder = 3;
+    this.biteMark = mark;
+    this.add(mark);
+    return mark;
+  }
+
+  /**
+   * While the float waits or bites and the visitor stays within the 5 u
+   * tether, keep the camera's soft interest on the float, offset to the
+   * cast's right, so the float sits beside the avatar rather than behind
+   * it; and hand A's orbit camera a 30 degree interest yaw when it takes
+   * one. A look input releases both for the cast; reduced motion has none.
+   */
+  private updateFishingBias(): void {
+    const F = this.playerFishing;
+    if (!F.bobber || (F.phase !== 'wait' && F.phase !== 'bite') || a11y.reducedMotion) {
+      this.releaseFishingBias();
+      return;
+    }
+    if (this.fishBiasReleased) return;
+    const oc = this.orbitCamera;
+    if (!oc) return;
+    if (Math.abs(oc.getYawTarget() - this.fishBiasYaw0) > 0.02) {
+      this.releaseFishingBias(); // the visitor looked: their camera now
+      return;
+    }
+    const up = F.dir;
+    // The cast's right on the water: (player to float) x up.
+    const p = this.player.getWorldPosition();
+    this._fishBiasAt.copy(F.bobber.position).sub(p);
+    this._fishBiasSide.crossVectors(this._fishBiasAt, up);
+    if (this._fishBiasSide.lengthSq() < 1e-6) return;
+    this._fishBiasSide.normalize();
+    // Square to the cast, at chest height: the orbit camera clamps its
+    // interest bias to 2.4 u, so a point far out to the side spends all of
+    // it sideways. The camera slides right, the near avatar moves left on
+    // screen more than the far float does, and the float clears the avatar.
+    // (A point on the float spent half of it pulling the camera forward.)
+    this._fishBiasAt
+      .copy(p)
+      .addScaledVector(p.normalize(), 1.0)
+      .addScaledVector(this._fishBiasSide, 6);
+    this.setInteractionFocus(this._fishBiasAt, 0.3);
+    const yaw = (oc as { setInterestYaw?: (rad: number | null) => void }).setInterestYaw;
+    if (yaw) {
+      yaw.call(oc, GameScene.FISH_BIAS_YAW);
+      this.fishBiasYawSet = true;
+    }
+  }
+
+  private releaseFishingBias(): void {
+    this.fishBiasReleased = true;
+    if (!this.fishBiasYawSet) return;
+    this.fishBiasYawSet = false;
+    const oc = this.orbitCamera as { setInterestYaw?: (rad: number | null) => void } | undefined;
+    oc?.setInterestYaw?.(null);
   }
 
   private updateFisherman(time: number, dt: number): void {
@@ -9459,6 +9589,61 @@ export class GameScene extends THREE.Scene {
   /** Grant coins directly (quest rewards) — persists and updates the HUD. */
   public hasLocalCoins(): boolean {
     return this.hasLocalCoinRecord;
+  }
+
+  /** A meadow or arrival-trail coin picked up at `time` (the coin loop in
+   *  update): the ceremony starts, the count, the save, the HUD and the
+   *  meadow-coin hook (P2-B7). */
+  private collectMeadowCoin(
+    c: { mesh: THREE.Mesh; respawnAt: number; trail?: boolean },
+    time: number,
+  ): void {
+    const cu = c.mesh.userData as { homePos?: THREE.Vector3; collectT0?: number };
+    if (!cu.homePos) cu.homePos = c.mesh.position.clone();
+    cu.homePos.copy(c.mesh.position);
+    cu.collectT0 = time;
+    // 120s (was 45s): a 45s cycle made the meadow an infinite coin farm, so
+    // hat prices were a timer, not a choice. Slower respawn makes race +
+    // quest + delivery rewards the sane way to kit out. Arrival-trail
+    // coins are one-shot: respawnAt 0 means the respawn branch never fires.
+    c.respawnAt = c.trail ? 0 : time + 120;
+    if (c.trail) {
+      // The first trail coin marks the visit: a reload after it builds no
+      // trail, so its coins cannot be collected again (a free coin per
+      // reload). main-simple's markDone at the trail's end writes the
+      // same key.
+      if (!this.arrivalMarked) {
+        this.arrivalMarked = true;
+        try {
+          localStorage.setItem('ds_arrived', '1');
+        } catch {
+          /* no storage: the trail shows again next visit */
+        }
+      }
+      if (--this.trailCoinsLeft === 0) this.onArrivalTrail?.();
+    }
+    // Streak-pitched chime: quick successive pickups climb a pentatonic
+    // ladder (resets after 2.5s of no coins) — the classic collect-a-thon
+    // reward grammar. Only THIS site pitches; shop dings stay flat.
+    this.coinStreak = time - this.lastCoinAt < 2.5 ? this.coinStreak + 1 : 0;
+    this.lastCoinAt = time;
+    sfx.coin(this.coinStreak);
+    this.coinsCollected++;
+    try {
+      localStorage.setItem('ds_coins', String(this.coinsCollected));
+    } catch {
+      /* session-only counter */
+    }
+    this.onCoinCollected?.(this.coinsCollected);
+    this.onMeadowCoin?.({ trail: c.trail === true });
+  }
+
+  /** Fires at a meadow or arrival-trail coin pickup (P2-B7), never for coins
+   *  granted by addCoins (sales, quests, races). A reads it from wave 4
+   *  (P2-A10) through `scene.setOnMeadowCoin?.(cb)`. */
+  private onMeadowCoin: ((e: { trail: boolean }) => void) | null = null;
+  public setOnMeadowCoin(cb: ((e: { trail: boolean }) => void) | null): void {
+    this.onMeadowCoin = cb;
   }
 
   public addCoins(n: number): void {
@@ -12183,44 +12368,7 @@ export class GameScene extends THREE.Scene {
       } else if (d2 >= 4.4 && cu.homePos && c.mesh.position.distanceToSquared(cu.homePos) > 1e-4) {
         c.mesh.position.lerp(cu.homePos, Math.min(1, 6 * deltaTime));
       }
-      if (d2 < 0.9) {
-        if (!cu.homePos) cu.homePos = c.mesh.position.clone();
-        cu.homePos.copy(c.mesh.position);
-        cu.collectT0 = time;
-        // 120s (was 45s): a 45s cycle made the meadow an infinite coin farm, so
-        // hat prices were a timer, not a choice. Slower respawn makes race +
-        // quest + delivery rewards the sane way to kit out. Arrival-trail
-        // coins are one-shot: respawnAt 0 means the respawn branch never fires.
-        c.respawnAt = c.trail ? 0 : time + 120;
-        if (c.trail) {
-          // The first trail coin marks the visit: a reload after it builds no
-          // trail, so its coins cannot be collected again (a free coin per
-          // reload). main-simple's markDone at the trail's end writes the
-          // same key.
-          if (!this.arrivalMarked) {
-            this.arrivalMarked = true;
-            try {
-              localStorage.setItem('ds_arrived', '1');
-            } catch {
-              /* no storage: the trail shows again next visit */
-            }
-          }
-          if (--this.trailCoinsLeft === 0) this.onArrivalTrail?.();
-        }
-        // Streak-pitched chime: quick successive pickups climb a pentatonic
-        // ladder (resets after 2.5s of no coins) — the classic collect-a-thon
-        // reward grammar. Only THIS site pitches; shop dings stay flat.
-        this.coinStreak = time - this.lastCoinAt < 2.5 ? this.coinStreak + 1 : 0;
-        this.lastCoinAt = time;
-        sfx.coin(this.coinStreak);
-        this.coinsCollected++;
-        try {
-          localStorage.setItem('ds_coins', String(this.coinsCollected));
-        } catch {
-          /* session-only counter */
-        }
-        this.onCoinCollected?.(this.coinsCollected);
-      }
+      if (d2 < 0.9) this.collectMeadowCoin(c, time);
     }
 
     // Day/night handoff for the small life: butterflies by day,
@@ -17096,6 +17244,15 @@ export class GameScene extends THREE.Scene {
   /** Start/finish gate of a race circuit, for the compass guide CTA. */
   public getRaceStartPosition(kind: 'land' | 'water'): THREE.Vector3 | null {
     return this.races?.getStartPosition(kind) ?? null;
+  }
+
+  /** The running race's next gate (P2-B7), written into `out` with no
+   *  allocation; null when no race runs. A's race compass (wave 4, P2-A8)
+   *  reads it as `scene.getRaceNextGate?.(out) ?? null`. */
+  public getRaceNextGate(
+    out: THREE.Vector3,
+  ): { idx: number; n: number; kind: 'land' | 'water' } | null {
+    return this.races?.getNextGate(out) ?? null;
   }
 
   /** Arm (or clear) a ?race=&beat= challenge target on the race HUD. */
