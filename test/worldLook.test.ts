@@ -2251,3 +2251,25 @@ describe('C7: the CBD towers in the island style, with no facade canvases', () =
     expect(calls).toBe(0);
   });
 });
+
+describe('C11: the ChocoMate thumbnail has no scrollbar strip', () => {
+  /** A WebP's canvas size from its RIFF header (VP8, VP8L or VP8X). */
+  const webpSize = (buf: Buffer): { w: number; h: number } => {
+    expect(buf.toString('ascii', 0, 4)).toBe('RIFF');
+    expect(buf.toString('ascii', 8, 12)).toBe('WEBP');
+    const kind = buf.toString('ascii', 12, 16);
+    if (kind === 'VP8X') return { w: 1 + buf.readUIntLE(24, 3), h: 1 + buf.readUIntLE(27, 3) };
+    if (kind === 'VP8L') {
+      const b = buf.readUInt32LE(21);
+      return { w: 1 + (b & 0x3fff), h: 1 + ((b >> 14) & 0x3fff) };
+    }
+    expect(kind).toBe('VP8 ');
+    return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+  };
+
+  test('chocomate.webp is re-exported at 808x384, 18 KB or less, at the same path', () => {
+    const buf = readFileSync(join(process.cwd(), 'public/assets/panels/chocomate.webp'));
+    expect(webpSize(buf)).toEqual({ w: 808, h: 384 });
+    expect(buf.length).toBeLessThanOrEqual(18 * 1024);
+  });
+});
