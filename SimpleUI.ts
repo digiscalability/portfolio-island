@@ -73,6 +73,24 @@ export function hapticPulse(ms: number): void {
 }
 
 /**
+ * The compass pill's narrow-screen label (D16). Under 480 px the pill keeps
+ * the destination's icon (a first token with no letter or digit) plus a
+ * short name: the first word after the icon, skipping a leading article, cut
+ * at 9 characters. A race counter stays whole ('Ring 3/7'), so 'Finish line'
+ * reads 'Finish'. iconOnly (under 340 px) keeps just the icon, or the short
+ * name when the label has no icon.
+ */
+export function compassShortLabel(label: string, iconOnly = false): string {
+  const words = label.trim().split(/\s+/).filter(Boolean);
+  const icon = words.length && !/[\p{L}\p{N}]/u.test(words[0]) ? words.shift()! : '';
+  if (words.length > 1 && /^(the|a|an)$/i.test(words[0])) words.shift();
+  let name = (words[0] ?? '').slice(0, 9);
+  if (name && /^\d+\/\d+$/.test(words[1] ?? '')) name = `${name} ${words[1]}`;
+  if (iconOnly && icon) return icon;
+  return [icon, name].filter(Boolean).join(' ');
+}
+
+/**
  * SimpleUI - Simplified UI manager for the basic app
  * Handles loading screen, welcome message, interaction prompts, and FPS display
  */
@@ -5148,7 +5166,7 @@ export class SimpleUI {
       top: '50%',
       left: '50%',
       transform: 'translate(-50%, -50%)',
-      background: 'rgba(12, 12, 20, 0.95)',
+      background: 'rgb(12, 12, 20)', // opaque: no minimap or compass through it (D16)
       color: 'white',
       padding: '24px',
       borderRadius: '16px',
@@ -5280,7 +5298,7 @@ export class SimpleUI {
     });
     this.portfolioMenuDiv = menu;
     this.overlay.appendChild(menu);
-    if (window.innerHeight <= 500) this.addScrollFade(menu, 'rgba(12, 12, 20, 0.95)');
+    if (window.innerHeight <= 500) this.addScrollFade(menu, 'rgb(12, 12, 20)');
   }
 
   // ── Controls & settings (D8) ───────────────────────────────────────────
@@ -7501,9 +7519,14 @@ export class SimpleUI {
     // Rim labels carry the NAME too: RADAR_RANGE (1.35 rad) is narrower than
     // the 1.57 rad district spacing, so neighbouring districts are ALWAYS
     // edge-clamped — anonymous coloured dots taught nobody the island's
-    // shape. Overlap-skip keeps crossings (two rim dots close together)
-    // from smearing text over text.
-    const rimLabels: Array<{ x: number; y: number }> = [];
+    // shape. In-range zones draw first, nearest first, and claim their label
+    // boxes; a label whose text box would overlap one already drawn is
+    // dropped (D16), so crossings never smear text over text.
+    const labelBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+    // D16: every minimap label is 10.5 px/600 ON SCREEN (ts converts to the
+    // 172 px draw space) with a 2 px stroke, so its cap height is >= 7 px.
+    const labelFont = `600 ${(10.5 * ts).toFixed(1)}px system-ui, sans-serif`;
+    const labelStroke = 2 * ts;
     // A name wider than its spot allows slides in along its row, so
     // 'Professional' near the east or west rim stays whole: the disc clips
     // whatever crosses it ('Work' never reached that far). Call with the
@@ -7516,8 +7539,12 @@ export class SimpleUI {
       );
       return cx + Math.max(-reach, Math.min(reach, x - cx));
     };
-    for (const z of data.zones) {
-      const p = place(z);
+    const placed = data.zones
+      .map((z) => ({ z, p: place(z) }))
+      .sort((a, b) => Number(a.p.edge) - Number(b.p.edge) || a.z.dist - b.z.dist);
+    const collides = (x: number, y: number, w: number, h: number): boolean =>
+      labelBoxes.some((r) => Math.abs(r.x - x) * 2 < r.w + w && Math.abs(r.y - y) * 2 < r.h + h);
+    for (const { z, p } of placed) {
       if (p.edge) {
         ctx.fillStyle = z.color;
         ctx.globalAlpha = 0.6;
@@ -7525,20 +7552,24 @@ export class SimpleUI {
         ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
-        if (z.label && !rimLabels.some((r) => Math.hypot(r.x - p.x, r.y - p.y) < 26)) {
-          rimLabels.push({ x: p.x, y: p.y });
+        if (z.label) {
           // Nudge the text toward the centre so it stays inside the disc.
           const ny = p.y + (cy - p.y) * 0.16;
           ctx.save();
-          ctx.font = `600 ${(8 * ts).toFixed(1)}px system-ui, sans-serif`;
+          ctx.font = labelFont;
           const nx = fitX(z.label, p.x + (cx - p.x) * 0.16, ny);
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.lineWidth = 2.5;
-          ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-          ctx.strokeText(z.label, nx, ny);
-          ctx.fillStyle = 'rgba(255,255,255,0.85)';
-          ctx.fillText(z.label, nx, ny);
+          const w = ctx.measureText(z.label).width + labelStroke;
+          const h = 10.5 * ts;
+          if (!collides(nx, ny, w, h)) {
+            labelBoxes.push({ x: nx, y: ny, w, h });
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.lineWidth = labelStroke;
+            ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+            ctx.strokeText(z.label, nx, ny);
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.fillText(z.label, nx, ny);
+          }
           ctx.restore();
         }
         continue;
@@ -7555,15 +7586,20 @@ export class SimpleUI {
       // both the dark disc and a bright marker.
       if (z.label) {
         ctx.save();
-        ctx.font = `600 ${(8.5 * ts).toFixed(1)}px system-ui, sans-serif`;
+        ctx.font = labelFont;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = labelStroke;
         ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-        const lx = fitX(z.label, p.x, p.y + 5.5 + 4.5 * ts);
-        ctx.strokeText(z.label, lx, p.y + 5.5);
-        ctx.fillStyle = 'rgba(255,255,255,0.95)';
-        ctx.fillText(z.label, lx, p.y + 5.5);
+        const ly = p.y + 5.5 + 5.25 * ts;
+        const lx = fitX(z.label, p.x, ly);
+        const lw = ctx.measureText(z.label).width + labelStroke;
+        if (!collides(lx, ly, lw, 10.5 * ts)) {
+          labelBoxes.push({ x: lx, y: ly, w: lw, h: 10.5 * ts });
+          ctx.strokeText(z.label, lx, p.y + 5.5);
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          ctx.fillText(z.label, lx, p.y + 5.5);
+        }
         ctx.restore();
       }
       ctx.strokeStyle = z.color;
@@ -8803,13 +8839,14 @@ export class SimpleUI {
       }
     }
     if (this.compassLabel) {
-      // Narrow screens: drop the WORDS but keep the destination's icon (the
-      // label's first token) \u2014 a bare "103m" was direction with no subject,
-      // the least useful string a compass can show.
-      const compact = window.innerWidth < 480;
-      const text = compact
-        ? `${state.label.split(' ')[0]} ${Math.round(state.distance)}m`
-        : `${state.label} \u2022 ${Math.round(state.distance)}m`;
+      // Narrow screens keep the destination's icon (the label's first token)
+      // AND a short name (D16): a bare "103m" was direction with no subject.
+      // Icon-only only below 340 px.
+      const w = window.innerWidth;
+      const text =
+        w < 480
+          ? `${compassShortLabel(state.label, w < 340)} ${Math.round(state.distance)}m`
+          : `${state.label} \u2022 ${Math.round(state.distance)}m`;
       if (this._compassText !== text) {
         this._compassText = text;
         this.compassLabel.textContent = text;
