@@ -5,11 +5,13 @@
 //   perf:gate -- --dist dist --port 5191                 baseline report + counter and µs budget checks
 //   perf:gate -- --base http://127.0.0.1:5191            the same, attached to a running preview
 //   perf:gate -- --dist dist --port 5191 --fx <name>     one __dsFx effect: per-view draws and programs, then 6 x 1.5 s per side
+//                                                         (npcTalk times in a held chat, interiorCam inside the Professional hall: FX_SCENE)
 //   perf:gate -- --ab <distA> <distB> --ports pA,pB [--cycles 6]   whole build B against A, ABAB, fresh context per cycle
 //   perf:gate -- --rejudge <perf-gate-ab.json>           the verdict maths again on a saved A/B's loads (no browser)
 //   perf:gate -- --dist dist --port 5191 --dusk          the dusk check alone: ?hour=17, then the clock to 17.5 after the warm
 //   perf:gate -- --dist dist --port 5191 --governor      E3: the lowtier4x profile (390x844 DPR 2 touch, 4x CPU, no timer
 //                                                         queries), governor live: renderScale and fps after 30 s
+//   perf:gate -- --dist dist --port 5191 --governor --profile desktop --hour 21   the desktop: the scale sheds before rung 1 (bloom) unless CPU-bound
 //   perf:gate -- --dist dist --port 5191 --gpuheavy      E3: the 1x low tier with ?gpuheavy=1: renderScale under 0.9 within 20 s
 //   add --seed to compare window.__dsSeedDraws with the subject's test/golden/seedDraws.json (--golden <path> overrides)
 //   add --dusk to --ab for the dusk check on each side (side B is held to it)
