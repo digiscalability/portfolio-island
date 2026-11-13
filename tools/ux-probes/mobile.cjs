@@ -5,6 +5,8 @@
 //   landings  |v| at touchdown for 5 points on the stick's hit square
 //             (58c8849: 1.00 at all 5, a full-speed lurch)
 //   walk      speed at dy -10, -20 and -40 px (58c8849: 5.6 u/s at all three)
+//   plateau   speed at 0.15 and 0.7 of the stick's radius (the ring found
+//             from the hit square, as today), B3's 2.0 and 5.6 u/s
 //   release   the thumb's return transition (58c8849: 0s, a snap)
 //   vibrate   every navigator.vibrate pulse (58c8849: 5 and 8 ms only)
 //   rim run   the stick pushed past its rim: running or not (A11's touch run)
@@ -32,7 +34,7 @@ const HIT = () => {
   const a = sq.getBoundingClientRect();
   const b = ring.getBoundingClientRect();
   const thumb = ring.querySelector('div');
-  return { sq: [a.left, a.top, a.width, a.height], c: [b.left + b.width / 2, b.top + b.height / 2], thumbTransition: thumb ? getComputedStyle(thumb).transitionDuration : null };
+  return { sq: [a.left, a.top, a.width, a.height], c: [b.left + b.width / 2, b.top + b.height / 2], ring: b.width, thumbTransition: thumb ? getComputedStyle(thumb).transitionDuration : null };
 };
 
 async function mobile(t) {
@@ -83,6 +85,25 @@ async function mobile(t) {
       await lib.sleep(900);
     }
     t.check(`${prof}: the stick's speed follows deflection`, out.walk[-10] < 3.5 && out.walk[-40] > 5, out.walk, 'dy -10 about 2 u/s, -40 about 5.6 (58c8849: 5.6 at all three)');
+    // Stick plateaus (B3, wave 4): deflection as a share of the stick's own
+    // radius (the ring's half-width, read from the build), not fixed px.
+    const R = h.ring / 2;
+    out.plateau = { radiusPx: lib.round(R, 1) };
+    for (const share of [0.15, 0.7]) {
+      const c = h.c;
+      await T.send('touchStart', [[c[0], c[1], 3]]);
+      await lib.sleep(50);
+      const end = Date.now() + 1800;
+      while (Date.now() < end) {
+        await T.send('touchMove', [[c[0], c[1] - share * R, 3]]);
+        await lib.sleep(120);
+      }
+      out.plateau[share] = await page.evaluate(() => +window.__app.scene.getPlayer().getTangentialSpeed().toFixed(2));
+      await T.send('touchEnd', []);
+      await lib.sleep(900);
+    }
+    t.check(`${prof}: the stick at 0.15 of its radius walks about 2.0 u/s (B3)`, Math.abs(out.plateau[0.15] - 2.0) <= 0.2, out.plateau, '2.0 ±0.2 u/s');
+    t.check(`${prof}: the stick at 0.7 of its radius walks about 5.6 u/s (B3)`, Math.abs(out.plateau[0.7] - 5.6) <= 0.3, out.plateau[0.7], '5.6 ±0.3 u/s');
     const tr = out.release ? out.release.thumbTransition : null;
     t.check(`${prof}: the thumb eases home on release`, tr === null ? null : tr.split(',').some((x) => parseFloat(x) > 0), tr, 'a transition of about 120 ms (58c8849: 0s)');
     // rim run: the stick pushed past its rim for 2 s
