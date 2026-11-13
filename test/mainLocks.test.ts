@@ -1837,20 +1837,7 @@ describe('wave-3 nits: comments sit on their methods and name live code', () => 
     expect(doc).toContain("D's SimpleUI.prewarmZonePanel");
   });
 
-  test('every GameScene.<member> a main-simple comment names exists in GameScene.ts', () => {
-    const scene = src('GameScene.ts');
-    const named = new Set(
-      [...src('main-simple.ts').matchAll(/GameScene\.(\w+)/g)].map((x) => x[1]),
-    );
-    expect(named.size).toBeGreaterThan(0);
-    for (const n of named) {
-      expect(scene, `GameScene.${n}`).toMatch(
-        new RegExp(
-          `(^|\\s)(?:(?:public|private|protected|static|readonly|get)\\s+)*${n}[(<: =]`,
-          'm',
-        ),
-      );
-    }
-    expect(named.has('hasVillagerWithin')).toBe(false);
+  test("aiVillagerWithin's comment no longer names the deleted GameScene.hasVillagerWithin", () => {
+    expect(src('main-simple.ts')).not.toContain('hasVillagerWithin');
   });
 });
