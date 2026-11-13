@@ -1932,3 +1932,22 @@ describe('wave 4 P2-A13: work sites, the School and the Bank explain themselves'
     expect(bodyOf(s, 'private startTour(')).toContain('sites ?? zones.get(');
   });
 });
+
+describe('wave 4 P2-A11: hall exhibits, the room look and the Leave label', () => {
+  test('a hall passes its exhibits, the Leave button names the room, hire_cta says interior', () => {
+    const s = stripped('main-simple.ts');
+    const eb = bodyOf(s, 'private enterBuilding(');
+    expect(eb).toContain('SimpleApp.INTERIOR_EXHIBITS[id]');
+    expect(eb).toContain('isZone ? undefined : id, exhibits);');
+    expect(eb).toContain('this.ui.showLeaveButton(() => this.exitBuilding(isZone), title);');
+    expect(bodyOf(s, 'private runExhibitArg(')).toContain(
+      "track('hire_cta', { cta: 'interior' });",
+    );
+  });
+
+  test('indoors a drag or J/L turns the room camera; pinch and wheel stay drained', () => {
+    const s = stripped('main-simple.ts');
+    expect(s).toContain('const roomLook = this.inputManager.getCameraInput();');
+    expect(s).toContain('if (turn !== 0) this.scene.setInteriorLook?.(-turn);');
+  });
+});

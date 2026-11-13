@@ -24,7 +24,7 @@ import {
   TOUR_DWELL_S,
 } from './Framing';
 import { fx } from './FxBudget';
-import { GameScene } from './GameScene';
+import { GameScene, type Exhibits } from './GameScene';
 import {
   Guide,
   guideCopy,
@@ -2440,6 +2440,63 @@ export class SimpleApp {
     contact: ['Hiring, or\na project?', 'admin@\ndigiscalability\n.com'],
   };
 
+  /** The contact email the Contact hall shows and copies (Fact Sheet). */
+  private static readonly OWNER_EMAIL = 'admin@digiscalability.com';
+  /**
+   * What each hall shows (P2-A11), handed to B's enterInterior as its
+   * exhibits (P2-B12). Written from the Public Fact Sheet and the panels'
+   * copy: no 'agent', no typed counts, Bano's Cookbook is Ammi's recipes,
+   * and DigiScalability is one person. Body text is 48 canvas px (B's
+   * EXHIBIT_FONT), so a side poster holds about four short lines. A chip
+   * with an id on the Projects posters becomes a pegboard spot that opens
+   * that card (at most four). INTERIOR_CONTENT stays as the fallback.
+   */
+  private static readonly INTERIOR_EXHIBITS: Record<string, Exhibits> = {
+    welcome: {
+      left: { lines: ['The Hub', 'Every avenue starts here'] },
+      right: { lines: ['The wall map:', 'press E to set the compass'] },
+    },
+    professional: {
+      left: { lines: ['Now: founder & lead developer, DigiScalability', 'since Jan 2025'] },
+      right: {
+        lines: ['The stack'],
+        chips: [
+          { label: 'TypeScript' },
+          { label: 'Three.js' },
+          { label: 'Firebase' },
+          { label: 'Next.js' },
+        ],
+      },
+      screen: { lines: ['CV · LinkedIn · GitHub — press E'] },
+    },
+    projects: {
+      left: {
+        lines: ['Press E at a card'],
+        chips: [
+          { label: 'RankPilot · pre-launch', id: 'rankpilot' },
+          { label: 'ChocoMate · paused', id: 'chocomate' },
+        ],
+      },
+      right: {
+        lines: ['Press E at a card'],
+        chips: [
+          { label: 'Bano’s Cookbook', id: 'banos' },
+          { label: 'Insta Services API', id: 'insta' },
+          { label: 'digiscalability.com' },
+        ],
+      },
+      screen: { lines: ['This island — open source (MIT)'] },
+    },
+    personal: {
+      left: { lines: ['Melbourne kitchens', '2017–2024, then back to code'] },
+      right: { lines: ['Bano’s Cookbook:', 'Ammi’s handwritten recipes from 1981'] },
+    },
+    contact: {
+      left: { lines: ['Hiring?', 'Press E at the counter for CV & contact'] },
+      right: { lines: ['Email'], chips: [{ label: SimpleApp.OWNER_EMAIL }] },
+    },
+  };
+
   // Which themed furniture set each zone building opens into (houses → cottage).
   private static readonly INTERIOR_THEMES: Record<string, string> = {
     welcome: 'hall',
@@ -2454,7 +2511,9 @@ export class SimpleApp {
   private insideIsZone = false;
 
   /** Execute the interior hotspot the player pressed E on. */
-  private runInteriorAction(hs: { action: string; text?: string }): void {
+  private runInteriorAction(hs: { action: string; text?: string; arg?: string }): void {
+    // P2-A11: the hotspot's arg (P2-B12) decides when it names one.
+    if (hs.arg && this.runExhibitArg(hs.arg)) return;
     if (hs.action === 'leave') {
       this.exitBuilding(this.insideIsZone);
     } else if (hs.action === 'room') {
@@ -2487,6 +2546,76 @@ export class SimpleApp {
     }
   }
 
+  /**
+   * An exhibit's action by its arg (P2-A11). Returns false for an arg this
+   * build does not know, so the hotspot's own action runs.
+   * - 'hire': the hire card, tracked as hire_cta {cta: 'interior'};
+   * - 'project' or 'project:<id>': Projects, at that card when named;
+   * - 'copy:email': the email to the clipboard, 'Copied' in the flash;
+   *   blocked, the Contact panel at its form;
+   * - 'compass': the compass to the nearest unstamped district (Projects
+   *   once all are stamped), through 'ds:guide-to';
+   * - 'times': the Island Times, as before.
+   */
+  private runExhibitArg(arg: string): boolean {
+    if (arg === 'hire') {
+      this.ui.showHireCard('cta');
+      track('hire_cta', { cta: 'interior' });
+      return true;
+    }
+    if (arg === 'project' || arg.startsWith('project:')) {
+      const anchor = arg.startsWith('project:') ? arg.slice('project:'.length) : '';
+      this.ui.showZonePanel(
+        { id: 'projects', name: 'projects' },
+        anchor ? { source: 'landmark', anchor } : { source: 'landmark' },
+      );
+      return true;
+    }
+    if (arg === 'copy:email') {
+      const email = SimpleApp.OWNER_EMAIL;
+      const blocked = (): void =>
+        this.ui.showZonePanel(
+          { id: 'contact', name: 'contact' },
+          { source: 'landmark', anchor: 'lead-form-block' },
+        );
+      const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+      if (!clip?.writeText) {
+        blocked();
+        return true;
+      }
+      clip.writeText(email).then(
+        () => this.ui.flashMessage(`✉️ Copied — ${email}`),
+        () => blocked(),
+      );
+      return true;
+    }
+    if (arg === 'compass') {
+      const from = this.insideZone ? this.zonePos(this.insideZone.id) : null;
+      const passport = this.passport;
+      let best = 'projects';
+      let bestD = Infinity;
+      if (from && passport) {
+        for (const z of this.zoneList ?? []) {
+          if (!passport.isStampZone(z.id) || passport.has(z.id)) continue;
+          const d = from.distanceToSquared(z.pos);
+          if (d < bestD) {
+            bestD = d;
+            best = z.id;
+          }
+        }
+      }
+      window.dispatchEvent(
+        new CustomEvent('ds:guide-to', { detail: { key: `district:${best}`, source: 'interior' } }),
+      );
+      return true;
+    }
+    if (arg === 'times') {
+      void this.ui.showIslandTimes();
+      return true;
+    }
+    return false;
+  }
+
   private enterBuilding(id: string, isZone: boolean, zone?: { id: string; name: string }): void {
     if (this.scene.isInsideInterior()) return;
     const d = DISTRICTS.find((x) => x.id === id);
@@ -2508,7 +2637,9 @@ export class SimpleApp {
     sfx.blip();
     this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
-      this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id);
+      // P2-A11: a hall gets its exhibits (houseId undefined for halls).
+      const exhibits = isZone ? SimpleApp.INTERIOR_EXHIBITS[id] : undefined;
+      this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id, exhibits);
       // No carry-over (INT-12): a key pressed on the doorstep, in the gap
       // between the last outdoor frame and this swap, never fires in the room.
       this.inputManager.clearLatched();
@@ -2517,7 +2648,8 @@ export class SimpleApp {
       // panel mid-build, so the panel threw (INT-02); fadeThrough's catch
       // swallowed it and this line never ran. The visitor stood in the room
       // with no Leave and no panel. Whatever a panel does, the way out exists.
-      this.ui.showLeaveButton(() => this.exitBuilding(isZone));
+      // P2-D2's optional title: 'Leave <room>'.
+      this.ui.showLeaveButton(() => this.exitBuilding(isZone), title);
       if (isZone && zone) {
         try {
           this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
@@ -3008,8 +3140,9 @@ export class SimpleApp {
         this.ui.hideInteractionPrompt();
       } else if (this.scene.isInsideInterior()) {
         // Interiors never feed the orbit camera either — same banking, same
-        // whip on stepping out the door. Drain both interior branches.
-        this.inputManager.getCameraInput();
+        // whip on stepping out the door. Drain both interior branches; the
+        // walk branch hands the yaw to the room camera (P2-A11).
+        const roomLook = this.inputManager.getCameraInput();
         consumePinchZoomFactor();
         if (this.ui.isWatchOpen()) {
           // Watching the wall screen (or picking): the room holds still, the
@@ -3032,6 +3165,15 @@ export class SimpleApp {
           // room (GameScene's interior mode) and E interacts with the hotspot.
           const moveInput = this.inputManager.getMovementInput();
           const joy = this.ui.getJoystick();
+          // Looking around (P2-A11): a drag or J/L turns the room camera.
+          // As outdoors, + turns right (OrbitCamera.keyLook, 90°/s); the
+          // room's yaw grows to the left, hence the sign. Pinch and wheel
+          // stay drained.
+          const keyTurn =
+            (this.inputManager.isKeyPressed('l') ? 1 : 0) -
+            (this.inputManager.isKeyPressed('j') ? 1 : 0);
+          const turn = roomLook.deltaX + keyTurn * (Math.PI / 2) * Math.min(deltaTime, 0.1);
+          if (turn !== 0) this.scene.setInteriorLook?.(-turn);
           this.scene.setInteriorMove(
             Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
             Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),

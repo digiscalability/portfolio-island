@@ -299,3 +299,100 @@ describe('the capture-phase Escape rule (P2-A1)', () => {
     expect(r.ui.fadeThrough).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---- P2-A11: hall exhibits say something and act on E ----------------------
+describe('P2-A11: exhibits, their hotspot actions and the Leave label', () => {
+  type M = (this: unknown, ...a: unknown[]) => unknown;
+  let p: Record<string, M>;
+  let EX: Record<string, { left?: { lines: string[] }; right?: unknown; screen?: unknown }>;
+  beforeAll(async () => {
+    const mod = await import('../main-simple');
+    p = mod.SimpleApp.prototype as unknown as Record<string, M>;
+    EX = (mod.SimpleApp as unknown as { INTERIOR_EXHIBITS: typeof EX }).INTERIOR_EXHIBITS;
+  }, 120000);
+
+  const app = () => {
+    const ui = {
+      showHireCard: vi.fn(),
+      showZonePanel: vi.fn(),
+      flashMessage: vi.fn(),
+      showIslandTimes: vi.fn(async () => undefined),
+    };
+    const zones = [
+      { id: 'professional', pos: { d: 0 } },
+      { id: 'projects', pos: { d: 100 } },
+      { id: 'contact', pos: { d: 4 } },
+      { id: 'personal', pos: { d: 9 } },
+    ];
+    const stamped = new Set(['professional']);
+    const a: Record<string, unknown> = {
+      ui,
+      insideZone: { id: 'welcome', name: 'Welcome' },
+      zoneList: zones,
+      zonePos: () => ({ distanceToSquared: (q: { d: number }) => q.d }),
+      passport: { isStampZone: () => true, has: (id: string) => stamped.has(id) },
+    };
+    a.runExhibitArg = p.runExhibitArg.bind(a);
+    return { a, ui };
+  };
+
+  test("'hire' opens the hire card; 'project:<id>' opens Projects at that card, never stamping", () => {
+    const { a, ui } = app();
+    expect(p.runInteriorAction.call(a, { action: 'panel', arg: 'hire' })).toBeUndefined();
+    expect(ui.showHireCard).toHaveBeenCalledWith('cta');
+    p.runInteriorAction.call(a, { action: 'panel', arg: 'project:banos' });
+    expect(ui.showZonePanel).toHaveBeenLastCalledWith(
+      { id: 'projects', name: 'projects' },
+      { source: 'landmark', anchor: 'banos' },
+    );
+    p.runInteriorAction.call(a, { action: 'panel', arg: 'project' });
+    expect(ui.showZonePanel).toHaveBeenLastCalledWith(
+      { id: 'projects', name: 'projects' },
+      { source: 'landmark' },
+    );
+  });
+
+  test("'compass' sets the nearest unstamped district through 'ds:guide-to'", () => {
+    const { a } = app();
+    const seen: unknown[] = [];
+    const on = (e: Event) => seen.push((e as CustomEvent).detail);
+    window.addEventListener('ds:guide-to', on);
+    p.runInteriorAction.call(a, { action: 'panel', arg: 'compass' });
+    window.removeEventListener('ds:guide-to', on);
+    expect(seen).toEqual([{ key: 'district:contact', source: 'interior' }]);
+  });
+
+  test("'copy:email' with no clipboard opens Contact at its form", () => {
+    const { a, ui } = app();
+    const nav = navigator as unknown as { clipboard?: unknown };
+    const had = Object.getOwnPropertyDescriptor(nav, 'clipboard');
+    Object.defineProperty(nav, 'clipboard', { value: undefined, configurable: true });
+    try {
+      p.runInteriorAction.call(a, { action: 'panel', arg: 'copy:email' });
+    } finally {
+      if (had) Object.defineProperty(nav, 'clipboard', had);
+    }
+    expect(ui.showZonePanel).toHaveBeenCalledWith(
+      { id: 'contact', name: 'contact' },
+      { source: 'landmark', anchor: 'lead-form-block' },
+    );
+  });
+
+  test('the copy: five halls, no agents, no grandmother, no studio; four pegboard ids', () => {
+    expect(Object.keys(EX).sort()).toEqual([
+      'contact',
+      'personal',
+      'professional',
+      'projects',
+      'welcome',
+    ]);
+    const text = JSON.stringify(EX);
+    expect(text).not.toMatch(/\bagents?\b|grandmother|studio|live AI/i);
+    expect(text).toContain('founder & lead developer, DigiScalability');
+    expect(text).toContain('Ammi');
+    expect(text).toContain('open source (MIT)');
+    expect(text).toContain('admin@digiscalability.com');
+    const ids = [...text.matchAll(/"id":"([a-z]+)"/g)].map((m) => m[1]);
+    expect(ids).toEqual(['rankpilot', 'chocomate', 'banos', 'insta']);
+  });
+});
