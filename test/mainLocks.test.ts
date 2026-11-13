@@ -1979,8 +1979,18 @@ describe('wave 4 MOT-06: the tour turns the camera continuously', () => {
     );
     expect(fly).toContain('this.tourStopQuat(this._tourToQuat, stop);');
     expect(fly).toContain('this._tourArcQ.setFromUnitVectors(tour.fromDir, stop.dir)');
-    expect(fly).toContain('cam.quaternion.slerpQuaternions(tour.fromQuat, this._tourToQuat, e);');
-    expect(fly).toContain('cam.quaternion.premultiply(this._tourQ.identity().slerp(arc, e));');
+    // the turn runs on its own ease (peak slope 1.11, not the sine's 1.57)
+    expect(fly).toContain(
+      'const want = this.tourFlightQuat(this._tourSampleQ, tour.fromQuat, arc, easeTourTurn(k));',
+    );
+    // no frame turns more than 1.8 deg; the leg lands once the camera is on the rail
+    expect(fly).toContain('cam.quaternion.rotateTowards(want, TOUR_TURN_MAX_STEP_RAD);');
+    expect(fly).toContain(
+      'if (k >= 1 && cam.quaternion.angleTo(want) < 1e-4) this.landTourStop();',
+    );
+    const f = bodyOf(stripped('main-simple.ts'), 'private tourFlightQuat(');
+    expect(f).toContain('out.slerpQuaternions(from, this._tourToQuat, e);');
+    expect(f).toContain('out.premultiply(this._tourCarryQ.identity().slerp(arc, e));');
     // lookAt is undefined straight down: the view passed the nadir on two legs
     expect(fly).not.toContain('cam.lookAt(');
     // the dwell's pose is the one the leg lands on: same eye, target and up
@@ -1991,6 +2001,14 @@ describe('wave 4 MOT-06: the tour turns the camera continuously', () => {
     expect(q).toContain('this._tourLook.copy(stop.dir).multiplyScalar(stop.r)');
     expect(q).toContain('this._tourViewB.copy(stop.look).normalize()');
     expect(q).toContain('this._tourMat.lookAt(eye, stop.look, up);');
+  });
+
+  test('each leg is long enough that its sampled turn peaks under 80 deg/s', () => {
+    const d = bodyOf(stripped('main-simple.ts'), 'private legDuration(');
+    expect(d).toContain(
+      'this.tourFlightQuat(this._tourSampleQ, tour.fromQuat, arc, i / TOUR_TURN_SAMPLES)',
+    );
+    expect(d).toContain('tourTurnFloor(maxDegPerE)');
   });
 
   test('each leg leaves from the camera it has (no step at advanceTourStop or startTour)', () => {

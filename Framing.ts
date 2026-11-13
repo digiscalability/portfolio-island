@@ -88,6 +88,46 @@ export function easeInOutSine(k: number): number {
 }
 
 /**
+ * MOT-06: the flight's ORIENTATION turns on its own ease, a cosine-ramped
+ * trapezoid: the turn rate rises smoothly over the first TOUR_TURN_RAMP of
+ * the leg, holds, and falls over the last. Its peak slope is 1/(1 − ramp)
+ * (1.11) against easeInOutSine's π/2 (1.57), so the same turn in the same
+ * time peaks 29% slower. Under easeInOutSine leg 1 peaked at 106-116 deg/s,
+ * and at that rate any frame over ~18 ms broke the probe's 2 deg/frame bar.
+ */
+export const TOUR_TURN_RAMP = 0.1;
+/** No leg turns the camera faster than this (deg/s): 2 deg holds to 25 ms frames. */
+export const TOUR_TURN_PEAK_DEG_S = 80;
+/**
+ * No single frame turns the tour camera more than this (deg). A slow frame
+ * (a busy host, a GC pause) would otherwise turn rate × dt: at 80 deg/s a
+ * 25 ms frame is 2 deg. The camera lags the rail by the excess and catches
+ * up on the next frames (80 deg/s is 1.33 deg at 60 fps); the leg lands only
+ * once it has caught up.
+ */
+export const TOUR_TURN_MAX_STEP_DEG = 1.8;
+/** easeTourTurn's peak slope (de/dk), reached on the plateau. */
+export const TOUR_TURN_PEAK_SLOPE = 1 / (1 - TOUR_TURN_RAMP);
+
+/** The tour's orientation ease: 0 → 1, flat ends, continuous rate and acceleration. */
+export function easeTourTurn(k: number): number {
+  const c = Math.min(1, Math.max(0, k));
+  const a = TOUR_TURN_RAMP;
+  const p = TOUR_TURN_PEAK_SLOPE;
+  if (c > 0.5) return 1 - easeTourTurn(1 - c);
+  if (c < a) return p * (c / 2 - (a / (2 * Math.PI)) * Math.sin((Math.PI * c) / a));
+  return p * (a / 2 + (c - a));
+}
+
+/**
+ * MOT-06: a leg long enough that a turn whose largest rate is `maxDegPerE`
+ * (degrees per unit of ease) stays under TOUR_TURN_PEAK_DEG_S on easeTourTurn.
+ */
+export function tourTurnFloor(maxDegPerE: number): number {
+  return (TOUR_TURN_PEAK_SLOPE * Math.abs(maxDegPerE)) / TOUR_TURN_PEAK_DEG_S;
+}
+
+/**
  * A leg's duration: clamp(1.6 + arcDeg × 0.035, 2.6, 3.35) s, where arcDeg is
  * the leg's arc around the planet. A leg whose view would turn `turnDeg` with
  * a peak over TOUR_PEAK_DEG_S under easeInOutSine is lengthened until it

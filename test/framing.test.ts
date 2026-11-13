@@ -7,17 +7,21 @@ import { describe, expect, test } from 'vitest';
 import {
   BASE_VFOV,
   easeInOutSine,
+  easeTourTurn,
   framingFov,
   horizontalFov,
   renderedLength,
   tourCaption,
   tourFirstLegLift,
   tourLegDuration,
+  tourTurnFloor,
   TOUR_CAPTION_MAX,
   TOUR_DWELL_S,
   TOUR_LEG_MAX_S,
   TOUR_LEG_MIN_S,
   TOUR_PEAK_DEG_S,
+  TOUR_TURN_PEAK_DEG_S,
+  TOUR_TURN_PEAK_SLOPE,
 } from '../Framing';
 
 const ASPECTS = {
@@ -165,11 +169,11 @@ describe('MOT-06: the tour flight turns at most the leg turn under the ease', ()
     const q = new THREE.Quaternion().slerpQuaternions(fromQ, local, e);
     return q.premultiply(new THREE.Quaternion().slerp(arc, e));
   }
-  const steps = (f: (e: number) => THREE.Quaternion) => {
+  const steps = (f: (e: number) => THREE.Quaternion, ease = easeTourTurn) => {
     const out: number[] = [];
     let prev = f(0);
     for (let i = 1; i < N; i++) {
-      const q = f(easeInOutSine(i / (N - 1)));
+      const q = f(ease(i / (N - 1)));
       out.push(THREE.MathUtils.radToDeg(prev.angleTo(q)));
       prev = q;
     }
@@ -204,6 +208,43 @@ describe('MOT-06: the tour flight turns at most the leg turn under the ease', ()
       );
     };
     // measured: 3.08 deg old against 1.38 new on this leg
-    expect(Math.max(...steps(old))).toBeGreaterThan(2);
+    expect(Math.max(...steps(old, easeInOutSine))).toBeGreaterThan(2);
+  });
+
+  test('the turn ease peaks 29% under the sine and still lands flat', () => {
+    expect(easeTourTurn(0)).toBe(0);
+    expect(easeTourTurn(1)).toBe(1);
+    expect(easeTourTurn(0.5)).toBeCloseTo(0.5, 12);
+    expect(easeTourTurn(0.005)).toBeLessThan(1e-4);
+    let peak = 0;
+    let prev = 0;
+    for (let i = 1; i <= 2000; i++) {
+      const e = easeTourTurn(i / 2000);
+      expect(e).toBeGreaterThanOrEqual(prev);
+      peak = Math.max(peak, (e - prev) * 2000);
+      prev = e;
+    }
+    expect(peak).toBeCloseTo(TOUR_TURN_PEAK_SLOPE, 3);
+    expect(TOUR_TURN_PEAK_SLOPE / (Math.PI / 2)).toBeLessThan(0.72);
+  });
+
+  test('a leg sized by tourTurnFloor turns at most 80 deg/s (1.33 deg per 16.7 ms frame)', () => {
+    let maxPerE = 0;
+    let prev = flight(0);
+    for (let i = 1; i <= 48; i++) {
+      const q = flight(i / 48);
+      maxPerE = Math.max(maxPerE, THREE.MathUtils.radToDeg(prev.angleTo(q)) * 48);
+      prev = q;
+    }
+    const T = Math.max(TOUR_LEG_MIN_S, tourTurnFloor(maxPerE));
+    const frames = Math.round(T * 60);
+    let worst = 0;
+    let p = flight(0);
+    for (let i = 1; i <= frames; i++) {
+      const q = flight(easeTourTurn(i / frames));
+      worst = Math.max(worst, THREE.MathUtils.radToDeg(p.angleTo(q)) * 60);
+      p = q;
+    }
+    expect(worst).toBeLessThanOrEqual(TOUR_TURN_PEAK_DEG_S * 1.02);
   });
 });

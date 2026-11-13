@@ -18,10 +18,13 @@ import { featuredSell, saleSplit, type ProviderKey } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import {
   easeInOutSine,
+  easeTourTurn,
   tourCaption,
   tourFirstLegLift,
   tourLegDuration,
+  tourTurnFloor,
   TOUR_DWELL_S,
+  TOUR_TURN_MAX_STEP_DEG,
 } from './Framing';
 import { fx } from './FxBudget';
 import { GameScene, type Exhibits } from './GameScene';
@@ -134,6 +137,10 @@ type RaceScene = GameScene & {
  * be its own chunk (wave-4 bundle carry-over). test/mainLocks pins the two equal.
  */
 const CHAT_PROXIMITY_RADIUS = 0.35 * WORLD_RADIUS;
+
+/** MOT-06: points along a leg's turn sampled once per leg to find its peak rate. */
+const TOUR_TURN_SAMPLES = 48;
+const TOUR_TURN_MAX_STEP_RAD = THREE.MathUtils.degToRad(TOUR_TURN_MAX_STEP_DEG);
 
 /** One stop on the cinematic tour rail (SimpleApp.startTour). */
 interface TourStop {
@@ -278,6 +285,9 @@ export class SimpleApp {
   private readonly _tourToQuat = new THREE.Quaternion();
   private readonly _tourArcQ = new THREE.Quaternion();
   private readonly _tourMat = new THREE.Matrix4();
+  private readonly _tourCarryQ = new THREE.Quaternion();
+  private readonly _tourPrevQ = new THREE.Quaternion();
+  private readonly _tourSampleQ = new THREE.Quaternion();
   // Villager line-of-sight probe (firstHitOnly: the terrain's BVH fast path)
   private readonly _tourRay = Object.assign(new THREE.Raycaster(), { firstHitOnly: true });
 
@@ -5758,7 +5768,38 @@ export class SimpleApp {
       viewA.lengthSq() > 1e-9 && viewB.lengthSq() > 1e-9
         ? THREE.MathUtils.radToDeg(viewA.angleTo(viewB))
         : 0;
-    return tourLegDuration(arcDeg, turnDeg);
+    // MOT-06: the flight's own turn (orientation, carried frame included),
+    // sampled along its ease, keeps its peak under TOUR_TURN_PEAK_DEG_S.
+    this.tourStopQuat(this._tourToQuat, stop);
+    const arc = this._tourArcQ.setFromUnitVectors(tour.fromDir, stop.dir);
+    this._tourToQuat.premultiply(this._tourQ.copy(arc).invert());
+    const prev = this._tourPrevQ.copy(tour.fromQuat);
+    let maxDegPerE = 0;
+    for (let i = 1; i <= TOUR_TURN_SAMPLES; i++) {
+      const q = this.tourFlightQuat(this._tourSampleQ, tour.fromQuat, arc, i / TOUR_TURN_SAMPLES);
+      maxDegPerE = Math.max(
+        maxDegPerE,
+        THREE.MathUtils.radToDeg(prev.angleTo(q)) * TOUR_TURN_SAMPLES,
+      );
+      prev.copy(q);
+    }
+    return Math.max(tourLegDuration(arcDeg, turnDeg), tourTurnFloor(maxDegPerE));
+  }
+
+  /**
+   * MOT-06: the flight's orientation at turn-ease `e`: a slerp from the
+   * take-off pose to the stop's pose (this._tourToQuat, already brought back
+   * by the leg's arc), carried round the planet by the arc. Both ends are the
+   * poses themselves, so the seams at take-off and landing are continuous.
+   */
+  private tourFlightQuat(
+    out: THREE.Quaternion,
+    from: THREE.Quaternion,
+    arc: THREE.Quaternion,
+    e: number,
+  ): THREE.Quaternion {
+    out.slerpQuaternions(from, this._tourToQuat, e);
+    return out.premultiply(this._tourCarryQ.identity().slerp(arc, e));
   }
 
   /** A9: the first leg's rise (+3 u over 0.5 s, gone by landing); 0 on later legs. */
@@ -5815,13 +5856,17 @@ export class SimpleApp {
       // The slerp runs in a frame carried round the planet with the camera
       // (arc = fromDir -> stop.dir, eased like the position), so the horizon
       // stays near level mid-flight instead of rolling by the leg's arc.
+      // The turn runs on its own ease (easeTourTurn, peak slope 1.11 against
+      // the sine's 1.57) so its peak stays under 80 deg/s, not 116 (MOT-06).
       this.tourStopQuat(this._tourToQuat, stop);
       const arc = this._tourArcQ.setFromUnitVectors(tour.fromDir, stop.dir);
       this._tourToQuat.premultiply(this._tourQ.copy(arc).invert());
-      cam.quaternion.slerpQuaternions(tour.fromQuat, this._tourToQuat, e);
-      cam.quaternion.premultiply(this._tourQ.identity().slerp(arc, e));
+      // A slow frame turns at most TOUR_TURN_MAX_STEP_DEG; the camera catches
+      // up on the next frames and the leg lands once it has.
+      const want = this.tourFlightQuat(this._tourSampleQ, tour.fromQuat, arc, easeTourTurn(k));
+      cam.quaternion.rotateTowards(want, TOUR_TURN_MAX_STEP_RAD);
       cam.up.copy(this._tourUp.copy(stop.look).normalize());
-      if (k >= 1) this.landTourStop();
+      if (k >= 1 && cam.quaternion.angleTo(want) < 1e-4) this.landTourStop();
     } else {
       // Gentle drift around the stop while the caption is read — held static
       // under reduced motion (a rotation the user cannot stop, however slow,
