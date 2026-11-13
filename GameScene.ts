@@ -10696,27 +10696,68 @@ export class GameScene extends THREE.Scene {
     this.writeCoinInstances(0, this.camera?.quaternion ?? null);
   }
 
-  /** A soft four-point star on a 64 px canvas: the glint's sprite. */
+  /**
+   * A soft four-point star, 64 px: the glint's sprite. Written as a
+   * DataTexture, not a canvas, so it adds no CanvasTexture: the census row
+   * that counts C7's removed facade canvases read B9's glint as +1 against
+   * C7's -1 on desktop. Same picture as the canvas it replaces: a radial
+   * glow (white at the centre, warm 0.55 at 0.18, clear at the rim) under a
+   * 2 px cross at 0.9.
+   */
   private static glintTexture(): THREE.Texture {
-    const S = 64;
-    const c = typeof document !== 'undefined' ? document.createElement('canvas') : null;
-    if (!c) return new THREE.Texture();
-    c.width = c.height = S;
-    const g = c.getContext('2d');
-    if (g) {
-      const r = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-      r.addColorStop(0, 'rgba(255,255,255,1)');
-      r.addColorStop(0.18, 'rgba(255,245,200,0.55)');
-      r.addColorStop(1, 'rgba(255,240,180,0)');
-      g.fillStyle = r;
-      g.fillRect(0, 0, S, S);
-      g.fillStyle = 'rgba(255,255,255,0.9)';
-      g.fillRect(S / 2 - 1, 4, 2, S - 8);
-      g.fillRect(4, S / 2 - 1, S - 8, 2);
-    }
-    const tex = new THREE.CanvasTexture(c);
+    const tex = new THREE.DataTexture(
+      GameScene.glintPixels(),
+      GameScene.GLINT_PX,
+      GameScene.GLINT_PX,
+    );
     tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.needsUpdate = true;
     return tex;
+  }
+  static readonly GLINT_PX = 64;
+  /** The glint sprite's RGBA bytes (straight alpha), row-major. */
+  static glintPixels(): Uint8Array {
+    const S = GameScene.GLINT_PX;
+    const out = new Uint8Array(S * S * 4);
+    const stops: Array<[number, number, number, number, number]> = [
+      [0, 255, 255, 255, 1],
+      [0.18, 255, 245, 200, 0.55],
+      [1, 255, 240, 180, 0],
+    ];
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const r = Math.hypot(x + 0.5 - S / 2, y + 0.5 - S / 2) / (S / 2);
+        let k = 0;
+        while (k < stops.length - 2 && r > stops[k + 1][0]) k++;
+        const [r0, ...a] = stops[k];
+        const [r1, ...b] = stops[k + 1];
+        const t = THREE.MathUtils.clamp((r - r0) / (r1 - r0), 0, 1);
+        let cr = a[0] + (b[0] - a[0]) * t;
+        let cg = a[1] + (b[1] - a[1]) * t;
+        let cb = a[2] + (b[2] - a[2]) * t;
+        let ca = a[3] + (b[3] - a[3]) * t;
+        const bar =
+          (x >= S / 2 - 1 && x < S / 2 + 1 && y >= 4 && y < S - 4) ||
+          (y >= S / 2 - 1 && y < S / 2 + 1 && x >= 4 && x < S - 4);
+        if (bar) {
+          // White at 0.9 over the glow (source-over, straight alpha).
+          const oa = 0.9 + ca * 0.1;
+          cr = (255 * 0.9 + cr * ca * 0.1) / oa;
+          cg = (255 * 0.9 + cg * ca * 0.1) / oa;
+          cb = (255 * 0.9 + cb * ca * 0.1) / oa;
+          ca = oa;
+        }
+        const i = (y * S + x) * 4;
+        out[i] = Math.round(cr);
+        out[i + 1] = Math.round(cg);
+        out[i + 2] = Math.round(cb);
+        out[i + 3] = Math.round(ca * 255);
+      }
+    }
+    return out;
   }
 
   private readonly _coinM = new THREE.Matrix4();

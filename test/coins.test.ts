@@ -243,3 +243,42 @@ describe('the pop faces the camera and stays small on screen (B9 play fix)', () 
     sc.camera = savedCam;
   });
 });
+
+describe('the glint sprite is no CanvasTexture (B9 vs the C7 census row)', () => {
+  test('glintTexture is a 64 px DataTexture with the star: bright centre, clear rim, cross bars', () => {
+    const tex = (GameScene as unknown as { glintTexture(): THREE.Texture }).glintTexture();
+    expect((tex as THREE.CanvasTexture).isCanvasTexture).toBeFalsy();
+    expect((tex as THREE.DataTexture).isDataTexture).toBe(true);
+    const px = GameScene.glintPixels();
+    const S = GameScene.GLINT_PX;
+    expect(px).toHaveLength(S * S * 4);
+    const a = (x: number, y: number) => px[(y * S + x) * 4 + 3];
+    expect(a(32, 32)).toBeGreaterThan(240); // the centre
+    expect(a(0, 0)).toBe(0); // the corner, past the rim
+    expect(a(32, 6)).toBeGreaterThanOrEqual(229); // the vertical bar near its tip
+    expect(a(8, 6)).toBe(0); // off the bar, outside the glow
+    expect(a(32, 2)).toBeLessThan(20); // the bar stops 4 px short of the edge: glow only
+  });
+
+  test('the built coins carry no CanvasTexture', () => {
+    const sc = scene as unknown as {
+      coins: CoinRec[];
+      coinMesh: THREE.InstancedMesh | null;
+      coinGlint: THREE.InstancedMesh | null;
+      buildCoinInstances(): void;
+    };
+    const saved = sc.coins;
+    sc.coins = [coin()];
+    sc.coinMesh = null;
+    sc.coinGlint = null;
+    sc.buildCoinInstances();
+    for (const m of [sc.coinMesh, sc.coinGlint]) {
+      if (!m) continue;
+      const map = (m.material as THREE.MeshBasicMaterial).map;
+      if (map) expect((map as THREE.CanvasTexture).isCanvasTexture).toBeFalsy();
+    }
+    sc.coins = saved;
+    sc.coinMesh = null;
+    sc.coinGlint = null;
+  });
+});
