@@ -62,13 +62,14 @@ export function framingFov(aspect: number): number {
 
 /** Shortest and longest planned leg between two tour stops, seconds. */
 export const TOUR_LEG_MIN_S = 2.6;
-export const TOUR_LEG_MAX_S = 4.2;
+export const TOUR_LEG_MAX_S = 3.6;
 /** No leg is planned to turn the view faster than this at its peak (deg/s). */
 export const TOUR_PEAK_DEG_S = 120;
 /**
  * Seconds the camera studies each stop: 4.0, the floor the plan allows. At
  * 4.5 the full tour ran 50.5 s against its 44 s bar, because the districts'
- * legs arc 63-118 deg round the planet and four of six clamp at 4.2 s.
+ * legs arc 63-118 deg round the planet and clamped at 4.2 s; the leg ceiling
+ * came down to 3.6 s on 2026-11-13 (call made under Abbas's grant).
  */
 export const TOUR_DWELL_S = 4.0;
 /** The first leg rises this far (u) over its first TOUR_LIFT_S seconds. */
@@ -84,7 +85,7 @@ export function easeInOutSine(k: number): number {
 }
 
 /**
- * A leg's duration: clamp(1.6 + arcDeg × 0.035, 2.6, 4.2) s, where arcDeg is
+ * A leg's duration: clamp(1.6 + arcDeg × 0.035, 2.6, 3.6) s, where arcDeg is
  * the leg's arc around the planet. A leg whose view would turn `turnDeg` with
  * a peak over TOUR_PEAK_DEG_S under easeInOutSine is lengthened until it
  * does not (peak = π/2 × turnDeg / T).
