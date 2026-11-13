@@ -5192,7 +5192,7 @@ export class SimpleApp {
 
   // \u2500\u2500 Tour mode: skippable cinematic rail (welcome CTA / ?tour=1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // A9: each leg's flight time comes from legDuration (Framing.tourLegDuration),
-  // and the dwell is Framing.TOUR_DWELL_S (4.5 s, was 6.0).
+  // and the dwell is Framing.TOUR_DWELL_S (4.0 s, the plan's floor; was 6.0).
 
   /**
    * Build the rail and hand the camera to it. Stops are derived from live
@@ -6112,11 +6112,6 @@ export class SimpleApp {
   }
 
   /**
-   * True when a normalised walk phase [0,1) swept past `thr` between the
-   * previous and current sample, accounting for the 1\u21920 wrap. `prev < 0` marks
-   * a freshly (re)started stride, so nothing has been crossed yet.
-   */
-  /**
    * P2-A6: after a sale or a purchase, vendor `id` ignores E for 1.0 s, so a
    * double press never sells and then buys (the canteen) or reopens the shop
    * just closed (the kiosk).
@@ -6283,6 +6278,11 @@ export class SimpleApp {
     return !inWater && (this.inputManager.getRunInput() || stickRun);
   }
 
+  /**
+   * True when a normalised walk phase [0,1) swept past `thr` between the
+   * previous and current sample, accounting for the 1\u21920 wrap. `prev < 0` marks
+   * a freshly (re)started stride, so nothing has been crossed yet.
+   */
   private crossedPhase(prev: number, cur: number, thr: number): boolean {
     if (prev < 0) return false;
     if (cur >= prev) return prev < thr && thr <= cur;
