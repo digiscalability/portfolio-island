@@ -14,7 +14,7 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-import { addGroupHulls, addSkinnedHull, applyCelRim } from './CelLook';
+import { addFleetHull, addGroupHulls, addSkinnedHull, applyCelRim, STATIC_INK } from './CelLook';
 import {
   DISTRICTS,
   RING_DISTRICT_LONS,
@@ -22,9 +22,11 @@ import {
   DISTRICT_SHIFT,
   districtAccentAt,
 } from './Districts';
-import { DAY_FACTOR_UNIFORM, DUSK_FACTOR_UNIFORM } from './EnvironmentCycle';
+import { DAY_FACTOR_UNIFORM, DUSK_FACTOR_UNIFORM, requestNightRescan } from './EnvironmentCycle';
+import { fx } from './FxBudget';
 import { Materials } from './Materials';
 import { NPC } from './NPC';
+import { createSignTexture, type SignSpec } from './SignPainter';
 import { SimplePlayer } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
 import TextureGenerator from './TextureGenerator';
@@ -35,6 +37,25 @@ import {
   areaScale,
   beltScale,
 } from './WorldScale';
+import { burnDraws, withLocalRng } from './WorldSeed';
+
+/**
+ * The GLB props' 600-800 ms cross-fade from their placeholders (C carry-over,
+ * no-KHR post-card compiles). Fading sets a model's shared materials
+ * transparent, so it links a transparent variant of their programs (three
+ * keys 'opaque' into the program), and it flags every fading material
+ * needsUpdate each frame, so three re-keys them all, every frame, while the
+ * props land around the welcome card. MEASURED (phone and low tier, no KHR,
+ * 12 h): the fade's only extra program is Glow's transparent variant (52
+ * programs with the fade, 51 without), and a full compile 6 s after boot owes
+ * nothing either way: the opaque programs already exist when a fade hands its
+ * materials back. The low tier places the props opaque in one frame; desktop
+ * keeps the fade.
+ */
+fx.register('glbFade', { desktop: true, low: false });
+
+/** The Projects district's colour, for its boards' band. */
+const PROJECTS_BAND = DISTRICTS.find((d) => d.id === 'projects')?.accent ?? 0xc9a06a;
 
 type IslandMeshUserData = {
   _debug?: boolean;
@@ -302,6 +323,20 @@ export class Island {
    * edge read at all (0 px in every column probed), so it is 2.2 now (C2).
    */
   private seaBandsUniform = { value: new THREE.Vector3(2.2, 2.4, 3.2) };
+  /**
+   * True once a compile pass has built the sea. The sea is in the boot
+   * pre-compile on every tier and theme, behind the loader, and no frame is
+   * drawn before it, so a GLB that lands earlier has nothing to fade from.
+   */
+  private compilePassSeen = false;
+  /** GLB clones placed opaque (no fade) and clones that faded in. */
+  private readonly glbFadeStats = { opaque: 0, faded: 0 };
+  /** performance.now() of each fade's restore (the first 256), for probes. */
+  private readonly glbRestoreAt: number[] = [];
+  /** Read-only, for probes: how the GLB clones arrived (see 'glbFade'). */
+  public getGlbFadeStats(): { opaque: number; faded: number; restoreAt: number[] } {
+    return { ...this.glbFadeStats, restoreAt: this.glbRestoreAt.slice() };
+  }
   /** The share of the key's direct specular (SEA_GLARE) and direct diffuse
    *  (SEA_KEY) the sea keeps, now that the key stands high in every
    *  visitor's sky (see the sea's lights_fragment_end patch). Measured, not
@@ -397,6 +432,16 @@ export class Island {
    * notes how many draws the build has taken so far. With no recorder it does
    * nothing, and it never draws.
    */
+  /** Seeded draws the old gate board took (C6). MEASURED by drawNeutral's
+   *  census at each of the four gates, cold and warm: 24. */
+  private static readonly GATE_BOARD_DRAWS = 24;
+  /** Seeded draws a project plaque's CanvasTexture and SpriteMaterial took
+   *  (C6), MEASURED cold and warm at all five plaques: 12. The Sprite itself
+   *  (4, plus three's shared sprite geometry, 8, on the process's first) is
+   *  still constructed at plaque #0 and burned (4) at the later ones. */
+  private static readonly PLAQUE_TEXTURE_DRAWS = 12;
+  private static readonly PLAQUE_SPRITE_DRAWS = 4;
+
   private static seedMark(label: string): void {
     (globalThis as { __dsSeedMark?: (l: string) => void }).__dsSeedMark?.(label);
   }
@@ -1711,6 +1756,7 @@ export class Island {
       // pre-compile waits ~1 s on its last program, behind the loader (see
       // Materials.flushAfterCompile).
       Materials.flushAfterCompile(renderer);
+      this.compilePassSeen = true;
       shader.uniforms.uTime = this.seaTimeUniform;
       shader.uniforms.uAmp = { value: Island.WAVE_AMP };
       shader.uniforms.uTide = this.seaTideUniform;
@@ -2176,7 +2222,7 @@ export class Island {
       buildings.add(b);
       // Outline Tier 1: ink the tower masses. Guarded path (see addGroupHulls)
       // auto-skips the emissive window planes and any transparent glass.
-      addGroupHulls(b, 1.0, () => true);
+      addGroupHulls(b, 1.0, () => true, STATIC_INK);
       buildingPlaceholders.push(b);
     }
 
@@ -2352,7 +2398,7 @@ export class Island {
       houses.add(house);
       // Outline Tier 1: body/roof/plinth/chimney get ink; the doormat, knob
       // and porch lamp fall under the 0.6 size floor, windows plane-guard out.
-      addGroupHulls(house, 0.6, () => true);
+      addGroupHulls(house, 0.6, () => true, STATIC_INK);
       // Porch light: CONSTRUCTED, NEVER ADDED (decision P2-1: no exterior
       // point lights). three bakes the light COUNT into every lit program,
       // so six porch lights joining the scene at dusk re-linked the whole
@@ -3177,8 +3223,8 @@ export class Island {
       {
         name: 'Island Explorer',
         dialogue: [
-          'Have you found all five zones yet?',
-          'The compass at the top points to your next delivery.',
+          'Have you found every district yet?',
+          'The compass at the top points to where you are headed next.',
           'Press E near a glowing mailbox to collect!',
         ],
       },
@@ -3195,7 +3241,7 @@ export class Island {
         dialogue: [
           'Fresh ideas, get your fresh ideas here!',
           'Special today: one-of-a-kind digital experiences.',
-          'Browse the Project Portfolio zone for the full catalogue.',
+          'Browse the Project Portfolio district for the full catalogue.',
         ],
       },
       {
@@ -3289,9 +3335,9 @@ export class Island {
       {
         name: 'Cartographer',
         dialogue: [
-          'Five zones, twenty buildings, one sphere.',
+          'One sphere, and a district for every chapter.',
           'The Welcome Hub is at the north pole.',
-          'Everything else sits along the equator belt.',
+          'The other districts ring it on the slopes below.',
         ],
       },
       {
@@ -3386,7 +3432,7 @@ export class Island {
         name: 'Nurse',
         dialogue: [
           'Checkups are ten coins and worth every one — sixty seconds of spring in your step.',
-          'Drowning costs five. Swimming lessons are free: hold Space.',
+          'Drowning costs five. Swimming lessons are free: hold jump to stay afloat.',
           'The sea patrol fishes out more visitors than you would think.',
         ],
       },
@@ -3573,6 +3619,8 @@ export class Island {
     fountain.add(cap);
     fountain.castShadow = true;
     fountain.name = 'town_fountain';
+    // Ink (C4): basins, rim and pillar; the water is transparent and skipped.
+    addGroupHulls(fountain, 0.3, () => true, STATIC_INK);
     // Village square centerpiece, at the edge of the Personal hamlet
     // (the old raw world coords stranded it near the north pole)
     this.placeObjectOnSurface(
@@ -3786,6 +3834,12 @@ export class Island {
       carGroup.castShadow = true;
       carGroup.name = `car_${i}`;
       cars.add(carGroup);
+      // Ink (C4): the chassis and cabin, the masses that read as a car from
+      // across a street. Bumpers, wheels, spokes and lamps sit under the
+      // 1.1 world-size floor (the group's 1.45 scale puts a bumper at 0.99),
+      // and the glass is a transparent plane. The hulls ride the car when it
+      // is driven (they are its parts' children).
+      addGroupHulls(carGroup, 1.1, () => true);
     }
 
     // Add market stalls near houses
@@ -3863,7 +3917,7 @@ export class Island {
       stalls.add(stall);
       // Outline Tier 1: skirt/table/roof only — posts and goods sit under the
       // 1.0 world-size floor (group scale 2.2 is already applied above).
-      addGroupHulls(stall, 1.0, () => true);
+      addGroupHulls(stall, 1.0, () => true, STATIC_INK);
     }
 
     // Signboards removed: unsupported flat planes floating at 0.8u read as
@@ -3957,8 +4011,9 @@ export class Island {
       "Bano's Cookbook",
       'Insta Services',
     ];
+    const projectsLon = DISTRICTS.find((d) => d.id === 'projects')?.lon ?? 1.25 + SHIFT_PROJECTS;
     for (let i = 0; i < WORK_SITES.length; i++) {
-      const block = this.createConstructionBlock(PROJECT_LABELS[i], i === 0);
+      const block = this.createConstructionBlock(PROJECT_LABELS[i], i === 0, i);
       const pos = this.claimOffStreet(
         this.dirAt(WORK_SITES[i][0], WORK_SITES[i][1]),
         this.arc(6),
@@ -3976,6 +4031,15 @@ export class Island {
       block.castShadow = true;
       block.receiveShadow = true;
       block.name = `construction_${i}`;
+      // The board faces the avenue (the nearest street, else the district's
+      // plaza): a yaw on the sign's pivot inside the block, so the block's
+      // own plumb quaternion above stays exactly as it is. No draws.
+      const sign = block.getObjectByName('project-sign');
+      if (sign) {
+        const here = block.position.clone().normalize();
+        const street = this.nearestStreetDir(here, this.arc(25));
+        sign.rotation.y = this.localYawToward(block, street ?? this.dirAt(projectsLon, ZONE_LAT));
+      }
       constructions.add(block);
     }
     // After plaque #0, the process's first Sprite: a cold build pays three's
@@ -4503,38 +4567,24 @@ export class Island {
       beam.position.set(0, 2.45, 0);
       beam.castShadow = true;
       gate.add(beam);
-      // Name board on the beam — two back-to-back FrontSide planes so the name
-      // reads correctly both approaching (from the pole) and leaving (from the plaza).
-      const canvas = document.createElement('canvas');
-      canvas.width = 512;
-      canvas.height = 128;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        const accentHex = `#${d.accent.toString(16).padStart(6, '0')}`;
-        ctx.fillStyle = 'rgba(20,26,38,0.9)';
-        ctx.fillRect(0, 0, 512, 128);
-        ctx.strokeStyle = accentHex;
-        ctx.lineWidth = 6;
-        ctx.strokeRect(5, 5, 502, 118);
-        ctx.fillStyle = '#f2f6ff';
-        ctx.font = 'bold 64px system-ui, "Segoe UI", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(d.radar, 256, 68);
-        const tex = new THREE.CanvasTexture(canvas);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        // Gate boards are read OBLIQUELY while walking past — anisotropy 4
-        // keeps the 64px lettering crisp at an angle (default 1 smears it).
-        tex.anisotropy = 4;
-        // Unlit so the name stays legible at any hour (matches the project
-        // plaques' sprites). Two back-to-back FrontSide planes replace the old
-        // single DoubleSide plane: DoubleSide shows the texture MIRRORED from
-        // behind, and the gate's +Z faces its PLAZA (faceObjectToward below),
-        // so the title read backwards to players arriving from the pole. The
-        // -Z face is the one the approach reads — same convention as the zone
-        // building's door (+Z toward the pole). Shared geometry + material.
+      // Name board on the beam: a SignPainter board (C6), two back-to-back
+      // FrontSide planes so the name reads correctly both approaching (from
+      // the pole) and leaving (from the plaza). DoubleSide would show it
+      // MIRRORED from behind. The gate's +Z faces its PLAZA
+      // (faceObjectToward below); the -Z face is the one the approach reads.
+      //
+      // SEEDED WINDOW. The old board took exactly 24 draws here (MEASURED by
+      // drawNeutral's census, cold and warm: CanvasTexture 8, plane 4,
+      // material 4, two meshes 8). Burn them, then build the new board on a
+      // local stream, so everything after it draws what it drew before.
+      burnDraws(Island.GATE_BOARD_DRAWS);
+      withLocalRng(() => {
+        const tex = createSignTexture([{ kind: 'gate', text: d.radar, band: d.accent }]);
+        if (!tex) return;
+        // Unlit (MeshBasic), so the name stays legible at any hour with no
+        // light of its own; opaque timber, so no sorted pass.
         const boardGeom = new THREE.PlaneGeometry(1.8, 0.45);
-        const boardMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+        const boardMat = new THREE.MeshBasicMaterial({ map: tex });
         const board = new THREE.Mesh(boardGeom, boardMat);
         board.position.set(0, 2.45, 0.16);
         board.name = 'gate-board';
@@ -4544,9 +4594,9 @@ export class Island {
         boardBack.position.set(0, 2.45, -0.16);
         boardBack.rotation.y = Math.PI; // front toward the pole — read on approach
         boardBack.name = 'gate-board';
-        boardBack.raycast = () => {}; // decorative — skip interaction/camera rays
+        boardBack.raycast = () => {};
         gate.add(boardBack);
-      }
+      }, 0x6a7e0000 + gi);
       // Accent lantern crowning the gate — night-emissive, NO PointLight (the
       // rig is already at its 16-light budget).
       const lantern = new THREE.Mesh(
@@ -4583,7 +4633,7 @@ export class Island {
       // Outline Tier 1: posts + lintel; the district board keeps its clean
       // face (text legibility) — the lantern is emissive-but-opaque so its
       // ink cap is fine.
-      addGroupHulls(gate, 0.3, (m) => m.name !== 'gate-board');
+      addGroupHulls(gate, 0.3, (m) => m.name !== 'gate-board', STATIC_INK);
     }
     Island.seedMark('island:gateBoards');
 
@@ -6587,7 +6637,7 @@ export class Island {
             metal,
           ),
         );
-        addGroupHulls(g, 0.7, () => true);
+        addGroupHulls(g, 0.7, () => true, STATIC_INK);
       },
       'kiosk',
     );
@@ -6655,7 +6705,7 @@ export class Island {
             paper,
           ),
         );
-        addGroupHulls(g, 0.7, () => true);
+        addGroupHulls(g, 0.7, () => true, STATIC_INK);
       },
       'board',
     );
@@ -6689,7 +6739,7 @@ export class Island {
           ),
           merge([new THREE.BoxGeometry(1.4, 0.06, 1.0).rotateX(0.18).translate(0, 1.62, 0)], cloth),
         );
-        addGroupHulls(g, 0.7, () => true);
+        addGroupHulls(g, 0.7, () => true, STATIC_INK);
       },
       'canteen',
     );
@@ -6710,7 +6760,7 @@ export class Island {
         ),
         merge([new THREE.BoxGeometry(1.6, 0.06, 0.9).rotateX(0.2).translate(0, 1.5, 0)], cloth),
       );
-      addGroupHulls(g, 0.7, () => true);
+      addGroupHulls(g, 0.7, () => true, STATIC_INK);
     });
     // Market tables with parasols for the Contact plaza approach. The canopy
     // rim breathes in the wind on the shared grass clock. `parasolSway` only
@@ -7952,6 +8002,9 @@ export class Island {
     stool.position.set(0.9, 0.58, 0.5);
     g.add(stool);
 
+    // Ink (C4): deck and roof. The posts are instanced and the stool is
+    // under the floor.
+    addGroupHulls(g, 0.4, () => true, STATIC_INK);
     parent.add(g);
     this.bandstandSites.push(seat.position.clone());
     const up = seat.normal.clone();
@@ -8708,7 +8761,81 @@ export class Island {
     return group;
   }
 
-  private createConstructionBlock(label?: string, withCrane = false): THREE.Group {
+  /** The SpriteMaterial plaque #0's kept Sprite is built with, made once on
+   *  a local stream so it takes no seeded draws itself. */
+  private static keptSpriteMat: THREE.SpriteMaterial | null = null;
+  private static keptSpriteMaterial(): THREE.SpriteMaterial {
+    Island.keptSpriteMat ??= withLocalRng(() => new THREE.SpriteMaterial(), 0x5917e000);
+    return Island.keptSpriteMat;
+  }
+
+  /** Plaque board size (u). The 320x72 canvas at 2.6 x 0.585 puts the main
+   *  line's cap height at about 0.23 u (C6's bar is 0.21 u). */
+  static readonly PLAQUE_W = 2.6;
+  static readonly PLAQUE_H = 0.585;
+  /** The board stands 1.2 u in front of the 2.3 u site's front edge. */
+  static readonly SIGN_Z = 1.15 + 1.2;
+
+  /**
+   * A project board on two posts (C6): the SignPainter face front and back
+   * of a thin timber slab, its bottom 1.0 u above the ground and 1.2 u in
+   * front of the site (local +Z), under a pivot named 'project-sign' that
+   * the caller turns to face the avenue. Build it on a local stream.
+   */
+  private buildProjectSign(specs: SignSpec[]): THREE.Group | null {
+    const tex = createSignTexture(specs);
+    if (!tex) return null;
+    const pivot = new THREE.Group();
+    pivot.name = 'project-sign';
+    const W = Island.PLAQUE_W;
+    const H = Island.PLAQUE_H;
+    const bottom = 1.0;
+    const timber = Materials.createPBRMaterial({ color: 0x6d4a2f, roughness: 0.85 });
+    const face = new THREE.MeshBasicMaterial({ map: tex });
+    // BoxGeometry groups: +x, -x, +y, -y, +z (front), -z (back, reads
+    // correctly from behind).
+    const board = new THREE.Mesh(new THREE.BoxGeometry(W, H, 0.06), [
+      timber,
+      timber,
+      timber,
+      timber,
+      face,
+      face,
+    ]);
+    board.position.set(0, bottom + H / 2, Island.SIGN_Z);
+    board.name = 'project-board';
+    board.raycast = () => {};
+    pivot.add(board);
+    // The posts run 0.4 u into the ground, so a dip in front of the site
+    // never shows a floating foot.
+    const postLen = bottom + H + 0.4;
+    const postAt = (x: number): THREE.BufferGeometry =>
+      new THREE.CylinderGeometry(0.06, 0.06, postLen, 8).translate(
+        x,
+        postLen / 2 - 0.4,
+        Island.SIGN_Z - 0.06,
+      );
+    const postGeo = mergeGeometries([postAt(-W / 2 + 0.15), postAt(W / 2 - 0.15)]);
+    const posts = new THREE.Mesh(postGeo, timber);
+    posts.castShadow = true;
+    posts.raycast = () => {};
+    pivot.add(posts);
+    addGroupHulls(pivot, 0.3, () => true, STATIC_INK);
+    return pivot;
+  }
+
+  /** The yaw about an object's own local up (+Y) that turns its local +Z
+   *  toward a direction on the sphere. Pure math, no draws. */
+  private localYawToward(obj: THREE.Object3D, dir: THREE.Vector3): number {
+    const up = obj.position.clone().normalize();
+    const to = dir.clone().normalize().multiplyScalar(this.radius).sub(obj.position);
+    to.addScaledVector(up, -to.dot(up));
+    if (to.lengthSq() < 1e-8) return 0;
+    to.applyQuaternion(obj.quaternion.clone().invert());
+    return Math.atan2(to.x, to.z);
+  }
+
+  private createConstructionBlock(label?: string, withCrane = false, index = 0): THREE.Group {
     const group = new THREE.Group();
     // A half-built workshop, not a grey concrete cube. Finished timber lower
     // storey + a narrower "blueprint blue" upper storey still going up, so the
@@ -8776,50 +8903,27 @@ export class Island {
       load.castShadow = true;
       group.add(load);
     }
-    // Name plaque: connect the world to the content. Standing in the Projects
-    // district you saw five anonymous grey boxes while the panel talked about
-    // RankPilot/ChocoMate/… — now each block is labelled with its project. A
-    // camera-facing sprite avoids the floating-plane look that got signboards
-    // removed. (The timber/blueprint visual rescue lands in a later pass.)
+    // Name plaque: connect the world to the content (each block is labelled
+    // with its project). C6: a SignPainter board on two posts in front of the
+    // block, not a floating camera-facing sprite. The board's pivot is
+    // 'project-sign'; the WORK_SITES loop turns it to face the avenue.
     if (label) {
-      const canvas = document.createElement('canvas');
-      canvas.width = 320;
-      canvas.height = 72;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = 'rgba(15,20,32,0.82)';
-        ctx.fillRect(0, 0, 320, 72);
-        ctx.strokeStyle = 'rgba(150,185,255,0.42)'; // was 0.65 — quieter rim
-        ctx.lineWidth = 2;
-        ctx.strokeRect(2, 2, 316, 68);
-        let fs = 34;
-        ctx.font = `bold ${fs}px system-ui, "Segoe UI", sans-serif`;
-        while (ctx.measureText(label).width > 292 && fs > 14) {
-          fs -= 2;
-          ctx.font = `bold ${fs}px system-ui, "Segoe UI", sans-serif`;
-        }
-        ctx.fillStyle = '#eaf1ff';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(label, 160, 38);
-        const tex = new THREE.CanvasTexture(canvas);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = 4;
-        const sprite = new THREE.Sprite(
-          new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }),
-        );
-        sprite.name = 'project-plaque';
-        // 4.5: the scaffold poles (h=4 cylinders at y=2 → tops at 4.0, only
-        // 1.27 from centre — inside the plaque's 1.4 half-width) poked
-        // through the old 3.95 band (3.64–4.27). Bottom now 4.19, clearing
-        // the pole tops by 0.19; the crane jib (y 6.2) stays well above.
-        sprite.position.set(0, 4.5, 0);
-        sprite.scale.set(2.8, 0.63, 1);
-        // Decorative label — opt out of raycasting (skip the interaction/camera
-        // rays + the "Raycaster.camera not set" console spam).
-        sprite.raycast = () => {};
-        group.add(sprite);
+      // SEEDED WINDOW. The old plaque took 12 draws for its CanvasTexture
+      // and SpriteMaterial, then its Sprite: 4, and on the process's FIRST
+      // Sprite 8 more for three's shared sprite geometry (all MEASURED by
+      // drawNeutral, cold and warm). Plaque #0 still constructs one Sprite
+      // (never added) so that shared geometry is minted here in a cold build
+      // and nowhere later; the others burn the Sprite's 4.
+      burnDraws(Island.PLAQUE_TEXTURE_DRAWS);
+      if (index === 0) {
+        new THREE.Sprite(Island.keptSpriteMaterial());
+      } else {
+        burnDraws(Island.PLAQUE_SPRITE_DRAWS);
       }
+      withLocalRng(() => {
+        const sign = this.buildProjectSign([{ kind: 'plaque', text: label, band: PROJECTS_BAND }]);
+        if (sign) group.add(sign);
+      }, 0x91a00000 + index);
     }
     return group;
   }
@@ -8870,6 +8974,25 @@ export class Island {
     snow.position.set(0, 4.5, 0);
     group.add(snow);
     return group;
+  }
+
+  /**
+   * Tag lamp.glb's bulbs (its Glow material, on the instanced fleet or on the
+   * clones) as authored night bulbs, so EnvironmentCycle drives them at
+   * their own strength plus the desktop night lift (P2-E5). Returns how many
+   * meshes it tagged.
+   */
+  public tagAuthoredLampBulbs(): number {
+    let n = 0;
+    this.mesh.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh || Array.isArray(m.material) || m.material?.name !== 'Glow') return;
+      if (this.lampFleet.includes(m as THREE.InstancedMesh)) return;
+      m.userData.isNightEmissive = true;
+      m.userData.nightBulbAuthored = true;
+      n++;
+    });
+    return n;
   }
 
   // Attempt to replace the segmented road planes with DecalGeometry projected decals for sharper results.
@@ -9180,6 +9303,13 @@ export class Island {
       ) => {
         // clone model, apply local scale; caller should position the returned copy using placeObjectOnSurface
         const copy = model.clone(true) as THREE.Object3D;
+        // The fade sets the shared materials transparent, so it compiles the
+        // transparent variant of each (three keys 'opaque' into the program;
+        // the opaque ones are already built). See the 'glbFade' switch.
+        const fade = this.compilePassSeen && fx.on('glbFade');
+        copy.userData.glbFade = fade;
+        if (fade) this.glbFadeStats.faded++;
+        else this.glbFadeStats.opaque++;
         copy.position.set(0, 0, 0);
         copy.quaternion.identity();
         copy.scale.setScalar(scale);
@@ -9293,7 +9423,7 @@ export class Island {
                 'material map',
               );
 
-              if ('opacity' in typedMaterial) {
+              if (fade && 'opacity' in typedMaterial) {
                 typedMaterial.transparent = true;
                 (typedMaterial as { opacity?: number }).opacity = 0;
               }
@@ -9308,8 +9438,10 @@ export class Island {
               (typedMaterial as THREE.Material & { isMeshToonMaterial?: boolean })
                 .isMeshToonMaterial
             ) {
-              typedMaterial.transparent = true;
-              typedMaterial.opacity = 0;
+              if (fade) {
+                typedMaterial.transparent = true;
+                typedMaterial.opacity = 0;
+              }
               return;
             }
 
@@ -9361,8 +9493,10 @@ export class Island {
 
               standardMaterial.envMapIntensity =
                 typeof overrides?.envMapIntensity === 'number' ? overrides.envMapIntensity : 0.6;
-              standardMaterial.transparent = true;
-              standardMaterial.opacity = 0;
+              if (fade) {
+                standardMaterial.transparent = true;
+                standardMaterial.opacity = 0;
+              }
 
               if (Array.isArray(node.material)) {
                 const updatedMaterials = node.material.slice();
@@ -9435,6 +9569,7 @@ export class Island {
         mats: THREE.Material[],
         snap: Map<string, AuthoredMat>,
       ): void => {
+        if (this.glbRestoreAt.length < 256) this.glbRestoreAt.push(performance.now());
         for (const mat of mats) {
           // prepareClone REPLACES some source materials with fresh
           // MeshStandardMaterials (non-standard/physical sources), whose
@@ -9539,6 +9674,15 @@ export class Island {
           inst.instanceMatrix.needsUpdate = true;
           this.mesh.add(inst);
         }
+        // Ink (C4): the re-packed fleet (benches, mailboxes, lamps) lost the
+        // placeholders' hulls with the clones. One static hull for the whole
+        // fleet, at the instances' own matrices: a draw, no new program.
+        addFleetHull(
+          this.mesh,
+          Array.from(buckets.values(), (b) => ({ geometry: b.geometry, matrices: b.matrices })),
+          0.2,
+          `glbfleet_${label}ink`,
+        );
         for (const clone of clones) clone.parent?.remove(clone);
         return buckets.size;
       };
@@ -9673,7 +9817,15 @@ export class Island {
                     /* ignore animation setup errors */
                   }
 
-                  // fade in/out
+                  // fade in/out (none on the low tier or behind the loader: 'glbFade')
+                  if (!clone.userData.glbFade) {
+                    try {
+                      ph.visible = false;
+                    } catch {
+                      /* ignore */
+                    }
+                    return;
+                  }
                   const duration = 600;
                   const start = performance.now();
                   const fadeMats = collectFadeMaterials(clone);
@@ -9810,6 +9962,10 @@ export class Island {
         // (one flag each, materials untouched, so a failed load keeps it).
         onReplaced: () => {
           for (const m of this.lampFleet) m.visible = false;
+          // The authored bulbs (Glow) join the night drive in the hidden
+          // fleet's place: their own strength, plus the desktop night lift
+          // (P2-E5). One shared material, so no new program.
+          if (this.tagAuthoredLampBulbs() > 0) requestNightRescan();
         },
       });
       // Houses and towers stay PROCEDURAL. house.glb used to replace both
@@ -10045,7 +10201,8 @@ export class Island {
                     this.animationMixers.push(mixer);
                   }
                 } catch {}
-                // quick fade-in
+                // quick fade-in (none on the low tier or behind the loader: 'glbFade')
+                if (!copy.userData.glbFade) continue;
                 const duration = 800;
                 const start = performance.now();
                 const treeFadeMats = collectFadeMaterials(copy);

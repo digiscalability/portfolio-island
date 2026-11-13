@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
-import { addGroupHulls, isCelTheme } from './CelLook';
+import { addGroupHulls, isCelTheme, STATIC_INK } from './CelLook';
 import { Island } from './Island';
 import { Materials } from './Materials';
 
@@ -108,7 +108,7 @@ export class Zone {
     // MEASURED, not guessed: window boxes cluster at world radius 0.52/0.63,
     // real masses start at 0.8 — 0.5 hulled every window and blew the +126
     // draw ledger (147 hulls across the five halls; 0.7 keeps ~35).
-    addGroupHulls(this.marker, 0.7, (m) => m.name !== 'zone-beacon');
+    addGroupHulls(this.marker, 0.7, (m) => m.name !== 'zone-beacon', STATIC_INK);
 
     // Seat the building on the displaced surface and orient it so its DOOR
     // (local +Z) faces the pole — i.e. addresses the avenue the player arrives

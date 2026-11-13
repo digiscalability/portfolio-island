@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 import { a11y } from './Accessibility';
-import { setCelNight } from './CelLook';
+import { flushPhoneInk, isPhoneInk, setCelNight } from './CelLook';
 import { fx } from './FxBudget';
 import { isRealTheme } from './Theme';
 import { FOG_DENSITY_X_RADIUS, REFERENCE_RADIUS } from './WorldScale';
@@ -9,6 +9,33 @@ import { FOG_DENSITY_X_RADIUS, REFERENCE_RADIUS } from './WorldScale';
 // P2-C1: the sun, the moon and the sky's warm lobe run in the visitor's own
 // frame (switch 'localSun'; off gives the world-anchored sun back).
 fx.register('localSun', { desktop: true, low: true });
+
+/**
+ * P2-E5 (Abbas, 2026-11-13: "make the bulbs glow"). The night bloom threshold
+ * (SimpleRenderer.bloomNightThreshold) is 1.0 after dark, and the bulbs
+ * topped out under it at the old night intensity of 1.3: bloom on and
+ * off measured identical at 21 h. This lifts the isNightEmissive drive by the
+ * NIGHT factor (zero by day and through golden hour, so noon and dusk are
+ * unchanged) far enough over the threshold that the bloom pass halos them.
+ * Desktop only: the low tier has no bloom pass, so there the lift would only
+ * brighten the panes (its bar: within 2 L* of today). No light, no program.
+ */
+fx.register('bulbBloom', { desktop: true, low: false });
+export const BULB_NIGHT_BLOOM_LIFT = 3.0;
+
+/**
+ * The street lamps are lamp.glb's now (its Glow material, authored at
+ * emissive strength 5), and it lands AFTER the night pass and the one late
+ * rescan, so its bulbs never joined the drive (P2-E5 left no halo at
+ * Professional). Island tags the Glow meshes isNightEmissive plus
+ * nightBulbAuthored when the fleet lands and asks for one more pass here.
+ * An authored bulb keeps its own strength and colour at every hour (noon and
+ * the low tier unchanged) and takes the same desktop night lift on top.
+ */
+let nightRescanPending = false;
+export function requestNightRescan(): void {
+  nightRescanPending = true;
+}
 
 // Weather fog was authored as flat +0.010 (rain) / +0.005 (grey) ON TOP of the
 // R=50 base density (FOG_DENSITY_X_RADIUS / REFERENCE_RADIUS = 0.009). As the
@@ -338,6 +365,11 @@ export class EnvironmentCycle {
   private nightEmissives: Array<{
     mat: THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
     base: THREE.Color;
+    /** A bulb or lantern (a sphere), not a window pane: P2-E5 lifts these. */
+    bulb: boolean;
+    /** A GLB bulb's own emissive strength (lamp.glb Glow), kept at every
+     *  hour with the night lift on top; null for the drive's own bulbs. */
+    authored: number | null;
   }> = [];
   // District beacons (the 'zone-beacon' on each hall's roof), with the
   // colour each was authored in. Their own list, never nightEmissives: a
@@ -686,6 +718,7 @@ export class EnvironmentCycle {
         isLampLight?: boolean;
         isHouseWarmLight?: boolean;
         isNightEmissive?: boolean;
+        nightBulbAuthored?: boolean;
         isPavement?: boolean;
       };
       const l = obj as THREE.Light;
@@ -730,7 +763,12 @@ export class EnvironmentCycle {
       const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
       if (!mat.emissive || this.seenEmissive.has(mat)) return;
       this.seenEmissive.add(mat);
-      this.nightEmissives.push({ mat, base: mat.emissive.clone() });
+      // Bulbs and lanterns are spheres (street and plaza lamps, door lamps,
+      // gate lanterns); window panes are boxes and planes.
+      // A GLB bulb (lamp.glb Glow) says so itself and keeps its strength.
+      const authored = data.nightBulbAuthored ? mat.emissiveIntensity : null;
+      const bulb = authored !== null || mesh.geometry?.type === 'SphereGeometry';
+      this.nightEmissives.push({ mat, base: mat.emissive.clone(), bulb, authored });
     });
   }
 
@@ -1092,10 +1130,26 @@ export class EnvironmentCycle {
 
   /** Call every frame with the player's world position. */
   public update(deltaTime: number, playerPos: THREE.Vector3, time: number): void {
+    // A GLB fleet tagged after the passes above (lamp.glb's bulbs).
+    if (nightRescanPending) {
+      nightRescanPending = false;
+      this.collectNightAssets();
+    }
     // One-shot late pass for props placed after construction (TownPlanner)
     if (!this.rescanned) {
       this.rescanned = true;
       this.collectNightAssets();
+      // ?phoneink=1 on the low tier (C4, decision 15): every hall and prop
+      // is seated by now, so bake the recorded architecture into one hull per
+      // district, the halls' beacons standing for the district centres. A
+      // no-op without the flag and on desktop.
+      if (isPhoneInk()) {
+        const anchors: THREE.Vector3[] = [];
+        this.scene.traverse((o) => {
+          if (o.name === 'zone-beacon') anchors.push(o.getWorldPosition(new THREE.Vector3()));
+        });
+        flushPhoneInk(this.scene, anchors);
+      }
     }
     // The visitor's frame first: everything below that points at the sky uses it.
     this._framePos = playerPos;
@@ -1333,13 +1387,21 @@ export class EnvironmentCycle {
     }
 
     // Window panes + lamp bulbs: dim by day, glowing after dark, emissive
-    // deepened toward amber. 1.3 clears the 0.85 bloom threshold, so the
-    // bloom pass wraps them in halos at night for free.
+    // deepened toward amber. On desktop the night factor lifts the BULBS over
+    // the night bloom threshold (1.0) so the bloom pass halos them (P2-E5);
+    // the panes stay under it, or a hall's wall of windows hazes everything
+    // round it (measured: +18.6 L* on the player beside Professional).
     const nightF = 1 - dayFactor;
     const emIntensity = 0.15 + nightF * 1.15;
+    const bulbLift = fx.on('bulbBloom') ? night * BULB_NIGHT_BLOOM_LIFT : 0;
+    const bulbIntensity = emIntensity + bulbLift;
     this._c2.set(0xff9c46);
     for (const e of this.nightEmissives) {
-      e.mat.emissiveIntensity = emIntensity;
+      if (e.authored !== null) {
+        e.mat.emissiveIntensity = e.authored + bulbLift;
+        continue;
+      }
+      e.mat.emissiveIntensity = e.bulb ? bulbIntensity : emIntensity;
       e.mat.emissive.copy(e.base).lerp(this._c2, nightF * 0.3);
     }
 

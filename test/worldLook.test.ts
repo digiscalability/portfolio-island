@@ -41,6 +41,8 @@ import {
   setInkVisible,
 } from '../CelLook';
 import {
+  BULB_NIGHT_BLOOM_LIFT,
+  requestNightRescan,
   DAY_FACTOR_UNIFORM,
   DUSK_FACTOR_UNIFORM,
   duskFactorAt,
@@ -1889,19 +1891,24 @@ describe('district beacons keep their colours by day and by night (P2-C5)', () =
   test('windows and the door lamp keep the old drive: dim by day, amber at night', () => {
     const { env, halls } = town();
     const hall = halls[1].marker;
-    const tagged: Emissive[] = [];
+    const tagged: Array<{ m: Emissive; bulb: boolean }> = [];
     hall.traverse((o) => {
-      if (o.userData.isNightEmissive) tagged.push(matOf(o));
+      if (o.userData.isNightEmissive) {
+        const geo = (o as THREE.Mesh).geometry;
+        tagged.push({ m: matOf(o), bulb: geo?.type === 'SphereGeometry' });
+      }
     });
     expect(tagged.length).toBeGreaterThan(4);
+    expect(tagged.filter((t) => t.bulb).length).toBe(1); // the door lamp
     env.debugHour = 12;
     env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
-    for (const m of tagged) expect(m.emissiveIntensity).toBeCloseTo(0.15, 9);
+    for (const { m } of tagged) expect(m.emissiveIntensity).toBeCloseTo(0.15, 9);
     env.debugHour = 0;
     env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
     const amber = new THREE.Color(0xffe6a8).lerp(new THREE.Color(0xff9c46), 0.3).getHex();
-    for (const m of tagged) {
-      expect(m.emissiveIntensity).toBeCloseTo(1.3, 9);
+    for (const { m, bulb } of tagged) {
+      // P2-E5: on desktop the door lamp (a bulb) takes the night bloom lift.
+      expect(m.emissiveIntensity).toBeCloseTo(bulb ? 1.3 + BULB_NIGHT_BLOOM_LIFT : 1.3, 9);
       expect(m.emissive.getHex()).toBe(amber);
     }
   });
@@ -1942,5 +1949,165 @@ describe('district beacons keep their colours by day and by night (P2-C5)', () =
     const building = decl('Zones.ts', 'createBuilding');
     expect(building).not.toContain('beacon.userData.isNightEmissive');
     expect(stripped('Zones.ts').match(/userData\.isNightEmissive = true/g)).toHaveLength(4);
+  });
+});
+
+describe('the bulbs glow at night (P2-E5, ruling 2026-11-13)', () => {
+  test('a desktop-only lift on the bulbs, by the night factor, panes untouched', () => {
+    const src = stripped('EnvironmentCycle.ts');
+    // Desktop only: the low tier has no bloom pass to halo them.
+    expect(src).toContain("fx.register('bulbBloom', { desktop: true, low: false })");
+    // The NIGHT factor (zero by day and through golden hour), not 1 - day.
+    expect(src).toContain("fx.on('bulbBloom') ? night * BULB_NIGHT_BLOOM_LIFT : 0");
+    // Only the spheres (bulbs, lanterns) take it; the window panes do not.
+    expect(src).toContain(
+      "const bulb = authored !== null || mesh.geometry?.type === 'SphereGeometry'",
+    );
+    expect(src).toContain('e.mat.emissiveIntensity = e.bulb ? bulbIntensity : emIntensity');
+    // No light, no new material: the drive writes intensities only.
+    const update = decl('EnvironmentCycle.ts', 'update');
+    expect(update).not.toMatch(/new THREE\.(PointLight|SpotLight|Mesh\w*Material)/);
+  });
+});
+
+describe("lamp.glb's bulbs join the night drive when the fleet lands (P2-E5)", () => {
+  const cycleOver = (scene: THREE.Scene): EnvironmentCycle => {
+    installHeadlessCanvas();
+    return new EnvironmentCycle(
+      scene,
+      new THREE.DirectionalLight(0xffe9c0, 1.6),
+      new THREE.HemisphereLight(0xaacdf7, 0x4a6b32, 0.62),
+      {
+        topColor: { value: new THREE.Color() },
+        bottomColor: { value: new THREE.Color() },
+        horizonColor: { value: new THREE.Color() },
+      },
+    );
+  };
+  /** lamp.glb's Glow as it lands: opaque toon, emissive strength 5, a cone part. */
+  const glowFleet = (): THREE.InstancedMesh => {
+    const mat = new THREE.MeshToonMaterial({ color: 0xffd973, emissive: 0xffedb3 });
+    mat.name = 'Glow';
+    mat.emissiveIntensity = 5;
+    return new THREE.InstancedMesh(new THREE.ConeGeometry(0.2, 0.3, 8), mat, 3);
+  };
+
+  test('an authored bulb keeps its strength and colour by day and takes the night lift', () => {
+    const scene = new THREE.Scene();
+    const env = cycleOver(scene);
+    // Lands after construction and after the first update's late pass.
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 0);
+    const fleet = glowFleet();
+    fleet.userData.isNightEmissive = true;
+    fleet.userData.nightBulbAuthored = true;
+    scene.add(fleet);
+    const mat = fleet.material as THREE.MeshToonMaterial;
+    // Not driven until the island asks for the rescan.
+    env.debugHour = 0;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 1);
+    expect(mat.emissiveIntensity).toBe(5);
+    requestNightRescan();
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 2);
+    // Desktop (the test default): its own 5 plus the night lift.
+    expect(mat.emissiveIntensity).toBeCloseTo(5 + BULB_NIGHT_BLOOM_LIFT, 9);
+    expect(mat.emissive.getHex()).toBe(0xffedb3);
+    // Noon: exactly as authored, so the day look is unchanged.
+    env.debugHour = 12;
+    env.update(1 / 60, HUB.clone().multiplyScalar(R), 3);
+    expect(mat.emissiveIntensity).toBeCloseTo(5, 9);
+    expect(mat.emissive.getHex()).toBe(0xffedb3);
+  });
+
+  test('Island tags only the Glow parts, never the hidden fallback fleet', () => {
+    const src = stripped('Island.ts');
+    expect(decl('Island.ts', 'tagAuthoredLampBulbs')).toContain("m.material?.name !== 'Glow'");
+    expect(src).toContain('if (this.tagAuthoredLampBulbs() > 0) requestNightRescan();');
+  });
+});
+
+describe('villager lines tell the island as it is (p2/copy, C carry-over)', () => {
+  /** Every string in Island.ts's NPC_PERSONALITIES, as written. */
+  const villagerLines = (): string[] => {
+    const p = parse('Island.ts');
+    let found: ts.Node | null = null;
+    const find = (n: ts.Node): void => {
+      if (found) return;
+      if (
+        ts.isVariableDeclaration(n) &&
+        ts.isIdentifier(n.name) &&
+        n.name.text === 'NPC_PERSONALITIES'
+      )
+        found = n;
+      else ts.forEachChild(n, find);
+    };
+    find(p.sf);
+    expect(found).not.toBeNull();
+    const out: string[] = [];
+    const walk = (n: ts.Node): void => {
+      if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) out.push(n.text);
+      ts.forEachChild(n, walk);
+    };
+    walk(found as unknown as ts.Node);
+    return out;
+  };
+
+  test('no wrong fact, banned word or typed count (the p2/copy fact rules)', () => {
+    const lines = villagerLines();
+    expect(lines.length).toBeGreaterThan(60);
+    // The same list as tools/ux-probes/p2/guidance.cjs FACT_RULES.
+    const rules = [
+      /five zones/i,
+      /equator belt/i,
+      /next delivery/i,
+      /Project Portfolio zone/i,
+      /\b5 districts\b/i,
+      /\bagents?\b/i,
+      /live AI/i,
+      /\b(two dozen|dozens of)\b/i,
+    ];
+    const bad = lines.filter((l) => rules.some((re) => re.test(l)));
+    expect(bad).toEqual([]);
+    // The districts sit at ZONE_LAT (about 27 degrees), not on the equator,
+    // and no line types how many there are.
+    expect(
+      lines.filter((l) => /\b(five|5|twenty|20)\s+(zones|districts|buildings)\b/i.test(l)),
+    ).toEqual([]);
+  });
+
+  test('no keyboard key a phone cannot press, after touchifyPlain', () => {
+    // touchifyPlain rewrites 'press E/G/Q'; any other key name must not be typed.
+    const keys = [
+      /\bWASD\b/,
+      /\bSpace\b/,
+      /\bPress P\b/i,
+      /(^|[\s(,;])E to\b/,
+      /\(M\)/,
+      /\bpress (F|M|C)\b/i,
+    ];
+    expect(villagerLines().filter((l) => keys.some((re) => re.test(l)))).toEqual([]);
+  });
+});
+
+describe('the GLB props land opaque on the low tier (C carry-over, no-KHR compiles)', () => {
+  test("a 'glbFade' switch, desktop only, gates every transparent write of the fade", () => {
+    const src = stripped('Island.ts');
+    expect(src).toContain("fx.register('glbFade', { desktop: true, low: false })");
+    // Decided once per clone, before any material is touched.
+    expect(src).toContain("const fade = this.compilePassSeen && fx.on('glbFade');");
+    // The boot pre-compile builds the sea first; a GLB that lands earlier has
+    // nothing to fade from.
+    expect(src).toMatch(
+      /Materials\.flushAfterCompile\(renderer\);\s*this\.compilePassSeen = true;/,
+    );
+    // prepareClone's three start states are all behind the gate.
+    expect(src).toContain("if (fade && 'opacity' in typedMaterial) {");
+    expect(
+      src.match(/if \(fade\) \{\s*(typedMaterial|standardMaterial)\.transparent = true;/g),
+    ).toHaveLength(2);
+    expect(src.match(/\.transparent = true;/g)?.length).toBeGreaterThan(0);
+    // Both loaders skip the fade when the clone is opaque.
+    expect(src).toMatch(/if \(!clone\.userData\.glbFade\) \{\s*try \{\s*ph\.visible = false;/);
+    expect(src).toContain('if (!copy.userData.glbFade) continue;');
   });
 });
