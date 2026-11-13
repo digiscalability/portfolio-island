@@ -1888,7 +1888,9 @@ async function modeModal(args) {
       const shot = async (v) => {
         await set(v);
         await page.waitForTimeout(800);
-        return lib.pngDecode(await page.screenshot({ clip: rect }));
+        const buf = await page.screenshot({ clip: rect });
+        fs.writeFileSync(path.join(lib.outDir(args, 'perf-gate'), `modal-panel-${v ? 'on' : 'off'}.png`), buf);
+        return lib.pngDecode(buf);
       };
       const a = await shot(false);
       const b = await shot(true);
