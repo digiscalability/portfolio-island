@@ -149,12 +149,8 @@ describe('post-mixer limb poses compose onto the clip (MOT-01)', () => {
 
     player.jump();
     let airborne = 0;
-    // In the MODEL's own frame: B4's touchdown squash scales the whole body
-    // about the feet by design (sy 0.82 in one frame), which moves a hand
-    // ~0.1 u in the player frame. The bug this pins is limbs stacking, so the
-    // body's own scale and pivot are divided out.
     const handStep = largestHandStep(
-      model,
+      player,
       hands,
       () => {
         player.update(DT);

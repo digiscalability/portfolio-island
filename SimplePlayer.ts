@@ -515,6 +515,10 @@ export class SimplePlayer extends THREE.Group {
   private squashDt = 0;
   private modelBaseScale: THREE.Vector3 | null = null;
   private static readonly LEG_ABSORB_S = 0.08;
+  private static readonly LAND_DROP_S = 0.03;
+  private landT = 1; // seconds since touchdown (the drop runs while < LAND_DROP_S)
+  private landFrom = 1;
+  private landDepth = 0.82;
   private readonly boundSquash: () => void;
 
   private speed: number = 5.6; // movement speed. Was 8.0 (bumped 5.5→7.0→8.0 with the R30→40→50 grows — but 8.0 is a 28.8km/h SPRINT next to the 1.4u/s villagers). Calmed to 5.6 (~20km/h brisk walk, island crossing ~31s): relaxed pacing IS the product now, and vehicles exist for distance.
@@ -2357,11 +2361,11 @@ export class SimplePlayer extends THREE.Group {
       // B6: the other arm swings 0.12 rad back against the wave.
       const addArmL = -0.85 * air + (tossing ? tossLean : 0) + g.armL + 0.12 * wf.body;
       const addArmR = -0.85 * air + g.armR;
-      // B4's 80 ms leg absorb at touchdown: a small forward flex, 0.12 rad at
-      // its peak (a straight leg lifts its sole 0.61·(1 − cos 0.12) = 0.004 u).
+      // B4's 80 ms leg absorb at touchdown: a small forward flex, 0.08 rad at
+      // its peak (a straight leg lifts its sole 0.61·(1 − cos 0.08) = 0.002 u).
       const absorb =
         this.legAbsorbT > 0
-          ? -0.12 * Math.sin(Math.PI * (1 - this.legAbsorbT / SimplePlayer.LEG_ABSORB_S))
+          ? -0.08 * Math.sin(Math.PI * (1 - this.legAbsorbT / SimplePlayer.LEG_ABSORB_S))
           : 0;
       const airLeg = this.airLegWeight > 0.001 ? this.airLegWeight : 0;
       const addLeg = -0.45 * airLeg + (tossing ? 0.5 * tossCrouch : 0) + absorb;
@@ -2590,8 +2594,9 @@ export class SimplePlayer extends THREE.Group {
   /**
    * The landing spring (B4), on the rigged model's vertical scale `landSy`:
    * - rising (radial velocity > 0): stretch up to 1.15, eased by the spring;
-   * - touchdown: sy snaps to 0.82 (reduced motion 0.93) and springs home
-   *   at ω 18, ζ 0.45, so the deepest squash is the touchdown frame;
+   * - touchdown: sy drops to 0.82 (reduced motion 0.93) over 30 ms and
+   *   springs home at ω 18, ζ 0.45, so the deepest squash comes within two
+   *   frames of touchdown;
    * - an 80 ms leg absorb rides the same touchdown (legAbsorb, onClip).
    * writeBody adds the pivot that keeps the soles on the ground.
    */
@@ -2606,16 +2611,28 @@ export class SimplePlayer extends THREE.Group {
       this.wasAirborne = true;
     } else if (this.wasAirborne) {
       this.wasAirborne = false;
-      this.landSy = reduced ? 1 - 0.18 * 0.4 : 0.82;
+      this.landFrom = this.landSy;
+      this.landDepth = reduced ? 1 - 0.18 * 0.4 : 0.82;
+      this.landT = 0;
       this.landVy = 0;
       this.legAbsorbT = SimplePlayer.LEG_ABSORB_S;
     }
-    // Semi-implicit spring toward the target.
+    this.legAbsorbT = Math.max(0, this.legAbsorbT - dt);
+    if (this.landT < SimplePlayer.LAND_DROP_S) {
+      // Touchdown: down to the squash depth over 30 ms (two frames at 60 Hz),
+      // so the deepest squash is a touchdown frame and no single frame drops
+      // the body (and the hands) by the whole squash at once.
+      this.landT += dt;
+      const u = Math.min(1, this.landT / SimplePlayer.LAND_DROP_S);
+      this.landSy = this.landFrom + (this.landDepth - this.landFrom) * u;
+      this.landVy = 0;
+      return;
+    }
+    // Then a semi-implicit spring home (ω 18, ζ 0.45), or toward the stretch.
     const w = 18;
     const z = 0.45;
     this.landVy += ((target - this.landSy) * w * w - 2 * z * w * this.landVy) * dt;
     this.landSy += this.landVy * dt;
-    this.legAbsorbT = Math.max(0, this.legAbsorbT - dt);
   }
 
   /**
