@@ -573,3 +573,29 @@ describe('probe fixes from wave 2 (wave-3 amendments)', () => {
     expect(guide.nightHours('21, 2')).toEqual([21, 2]);
   });
 });
+
+// Wave 4 (P2-E2d): p2/landmarks judges each site's prompt against a fixture
+// of the Projects boards. owners.json contractChecks lists this read of
+// SignPainter.ts ("the landmark probe's Fact Sheet table").
+describe("the landmark probe's Fact Sheet table (wave-4 amendments)", () => {
+  const req = createRequire(import.meta.url);
+  const fs = req('node:fs') as typeof import('node:fs');
+  const path = req('node:path') as typeof import('node:path');
+
+  test('p2/landmarks carries SignPainter.PROJECT_BOARDS exactly, in WORK_SITES order', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../SignPainter.ts'), 'utf8');
+    const start = src.indexOf('export const PROJECT_BOARDS');
+    expect(start).toBeGreaterThan(-1);
+    const block = src.slice(start, src.indexOf('];', start));
+    const table = [
+      ...block.matchAll(/\{\s*name:\s*(['"])(.*?)\1,\s*status:\s*(['"])(.*?)\3\s*\}/g),
+    ].map((m) => ({ name: m[2], status: m[4] }));
+    const probe = req('../tools/ux-probes/p2/landmarks.cjs') as {
+      PROJECT_BOARDS: Array<{ name: string; status: string }>;
+      ANCHORS: string[];
+    };
+    expect(table).toHaveLength(5);
+    expect(probe.PROJECT_BOARDS).toEqual(table);
+    expect(probe.ANCHORS).toEqual(['rankpilot', 'chocomate', 'island', 'banos', 'insta']);
+  });
+});

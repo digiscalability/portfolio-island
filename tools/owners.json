@@ -287,6 +287,13 @@
       "why": "builds Island for the census through the isLowTierDevice mock"
     },
     {
+      "test": "probeSafety",
+      "via": "read",
+      "files": ["SignPainter.ts"],
+      "where": "probeSafety, the landmark probe's Fact Sheet table (wave 4)",
+      "why": "the landmark probe's Fact Sheet table: p2/landmarks' fixture equals SignPainter.PROJECT_BOARDS"
+    },
+    {
       "test": "grassMarshal",
       "via": "import",
       "files": ["SimpleRenderer.ts"],
