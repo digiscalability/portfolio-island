@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as THREE from 'three';
+import ts from 'typescript';
 import { describe, expect, test, vi } from 'vitest';
 
 import { GameScene } from '../GameScene';
@@ -350,7 +351,17 @@ describe('the arrival trail leads to a villager who talks (B10)', () => {
     const waits = loop.indexOf('if (this.trailCoinWaits(c)) continue;');
     expect(waits).toBeGreaterThan(-1);
     expect(waits).toBeLessThan(loop.indexOf('c.mesh.position.lerp(playerPos'));
-    expect(waits).toBeLessThan(loop.indexOf('if (c.trail) {'));
+    // The pickup (P2-B7 moved it into collectMeadowCoin, with the trail's
+    // bookkeeping) comes after the wait too.
+    const pickup = loop.indexOf('this.collectMeadowCoin(c, time)');
+    expect(pickup).toBeGreaterThan(-1);
+    expect(waits).toBeLessThan(pickup);
+    const g = stripped('GameScene.ts');
+    const from = g.indexOf('private collectMeadowCoin(');
+    const collect = g.slice(from, g.indexOf('private onMeadowCoin', from));
+    expect(from).toBeGreaterThan(-1);
+    expect(collect).toContain('if (c.trail) {');
+    expect(collect).toContain('this.onMeadowCoin?.({ trail: c.trail === true });');
   });
 });
 
@@ -801,5 +812,264 @@ describe('dead code stays gone (wave-2 amendment, older)', () => {
   test('GameScene.hasVillagerWithin is deleted, with its scratch vector', () => {
     expect(src('GameScene.ts')).not.toMatch(/\bhasVillagerWithin\b/);
     expect(src('GameScene.ts')).not.toContain('_nearNpcPos');
+  });
+});
+
+describe('the race compass reads the next gate (P2-B7)', () => {
+  // Behavioural, on a RaceSystem with a hand-made three-gate land circuit
+  // (gate 0 is start and finish). test/raceGate.test.ts is not in
+  // tools/owners.json, so this lives in B's sceneLocks.
+  const R = 75;
+  const dirs = [
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(0.6, 0.8, 0).normalize(),
+    new THREE.Vector3(0, 0.8, 0.6).normalize(),
+  ];
+  const surfaceR = [75.5, 76.25, 77];
+  const make = async (): Promise<
+    import('../RaceSystem').RaceSystem & {
+      circuits: Record<string, unknown>;
+    }
+  > => {
+    const { RaceSystem } = await import('../RaceSystem');
+    const island = { getRadius: () => R } as unknown as ConstructorParameters<typeof RaceSystem>[1];
+    const rs = new RaceSystem(new THREE.Scene(), island, []) as InstanceType<typeof RaceSystem> & {
+      circuits: Record<string, unknown>;
+    };
+    rs.circuits.land = { kind: 'land', dirs, surfaceR, gates: [], rings: [] };
+    return rs;
+  };
+  const at = (d: THREE.Vector3, nudge = 0): THREE.Vector3 =>
+    d
+      .clone()
+      .applyAxisAngle(new THREE.Vector3(1, 0, 0), nudge)
+      .multiplyScalar(R);
+
+  test('null when idle; idx, n and the gate point while racing; null after', async () => {
+    const rs = await make();
+    const out = new THREE.Vector3(9, 9, 9);
+    expect(rs.getNextGate(out)).toBeNull();
+    expect(out.toArray()).toEqual([9, 9, 9]); // untouched
+    // Driving through the start ring arms the run: the next gate is 1.
+    rs.update(0.016, at(dirs[0], 0.001), 'car');
+    rs.update(0.016, at(dirs[0]), 'car');
+    expect(rs.getNextGate(out)).toEqual({ idx: 1, n: 3, kind: 'land' });
+    expect(out.distanceTo(dirs[1].clone().multiplyScalar(surfaceR[1]))).toBeLessThan(1e-9);
+    rs.update(0.016, at(dirs[1]), 'car');
+    expect(rs.getNextGate(out)).toEqual({ idx: 2, n: 3, kind: 'land' });
+    rs.update(0.016, at(dirs[2]), 'car');
+    // Gate 0 again: the finish.
+    expect(rs.getNextGate(out)).toEqual({ idx: 0, n: 3, kind: 'land' });
+    expect(out.distanceTo(dirs[0].clone().multiplyScalar(surfaceR[0]))).toBeLessThan(1e-9);
+    // On foot, the run is abandoned.
+    rs.update(0.016, at(dirs[0]), null);
+    expect(rs.getNextGate(out)).toBeNull();
+  });
+
+  test('GameScene.getRaceNextGate forwards it, null before the races exist', () => {
+    const s = stripped('GameScene.ts');
+    const at = s.indexOf('public getRaceNextGate(');
+    expect(at).toBeGreaterThan(-1);
+    expect(s.slice(at, at + 200)).toContain('return this.races?.getNextGate(out) ?? null;');
+  });
+});
+
+describe('the bird feed says why it did not throw (P2-B7)', () => {
+  test("throwBirdFeed stays a boolean over throwBirdFeedReason's 'ok'", () => {
+    const s = stripped('GameScene.ts');
+    expect(bodyOf(s, 'public throwBirdFeed(): boolean')).toContain(
+      "return this.throwBirdFeedReason() === 'ok';",
+    );
+    const reason = bodyOf(s, 'public throwBirdFeedReason()');
+    for (const r of ["return 'none'", "return 'night'", "return 'sea'", "return 'ok'"]) {
+      expect(reason).toContain(r);
+    }
+    expect(reason).not.toMatch(/return (true|false)/);
+  });
+
+  test('night, no island: the reasons, behaviourally', () => {
+    const init = vi
+      .spyOn(GameScene.prototype as unknown as { initialize: () => Promise<void> }, 'initialize')
+      .mockResolvedValue(undefined);
+    const sc = new GameScene() as unknown as {
+      island: unknown;
+      player: unknown;
+      envCycle: unknown;
+      throwBirdFeedReason(): string;
+      throwBirdFeed(): boolean;
+    };
+    init.mockRestore();
+    sc.island = undefined;
+    expect(sc.throwBirdFeedReason()).toBe('none');
+    expect(sc.throwBirdFeed()).toBe(false);
+    sc.island = {};
+    sc.player = {};
+    sc.envCycle = { getDayFactor: () => 0.1 };
+    expect(sc.throwBirdFeedReason()).toBe('night');
+  });
+});
+
+describe('Multiplayer.ts has no import-time side effects (wave-3 bundle carry-over)', () => {
+  // A's wave-3 lazy load moves `import { Multiplayer }` behind a dynamic
+  // import. That is only safe if evaluating the module does nothing: no
+  // listeners, timers, network, DOM or Firebase until `new Multiplayer()` and
+  // connect(). Its dependencies (Materials, Moderation, SimplePlayer) are
+  // already loaded eagerly by main-simple, so only this module's own top
+  // level matters.
+  test('the top level holds only imports and declarations', () => {
+    // Parsed, not brace-counted: strings and regexes in the class body hold
+    // brackets and slashes that throw a character scan off.
+    const sf = ts.createSourceFile('Multiplayer.ts', src('Multiplayer.ts'), ts.ScriptTarget.Latest);
+    const loose = sf.statements
+      .filter(
+        (st) =>
+          !ts.isImportDeclaration(st) &&
+          !ts.isInterfaceDeclaration(st) &&
+          !ts.isTypeAliasDeclaration(st) &&
+          !ts.isClassDeclaration(st) &&
+          !ts.isFunctionDeclaration(st) &&
+          !(
+            ts.isEnumDeclaration(st) &&
+            st.modifiers?.some((m) => m.kind === ts.SyntaxKind.ConstKeyword)
+          ),
+      )
+      .map((st) => st.getText(sf).slice(0, 80));
+    expect(loose).toEqual([]);
+    // No static field initialisers run code at class definition either.
+    const cls = sf.statements.filter(ts.isClassDeclaration);
+    const staticInits = cls.flatMap((c) =>
+      c.members
+        .filter(
+          (m) =>
+            (ts.isPropertyDeclaration(m) && m.initializer) || ts.isClassStaticBlockDeclaration(m),
+        )
+        .filter(
+          (m) =>
+            ts.isClassStaticBlockDeclaration(m) ||
+            m.modifiers?.some((x) => x.kind === ts.SyntaxKind.StaticKeyword),
+        )
+        .map((m) => m.getText(sf).slice(0, 80)),
+    );
+    expect(
+      staticInits.filter((t) => !/=\s*(-?[\d.]+|'[^']*'|true|false|null)\s*;?$/.test(t)),
+    ).toEqual([]);
+    const s = stripped('Multiplayer.ts');
+    // Firebase stays behind connect()'s dynamic imports.
+    expect(s).not.toMatch(/^import[^\n]*(firebase|firebaseClient)/m);
+    expect(s).toContain("import('./firebaseClient')");
+    expect(s).toContain("import('firebase/database')");
+  });
+
+  test('evaluating the module adds no listener, timer, frame or request', async () => {
+    // Dependencies first, so only Multiplayer's own evaluation is measured.
+    // Materials is already loaded through the static GameScene import above.
+    await import('../Moderation');
+    await import('../SimplePlayer');
+    const spies = [
+      vi.spyOn(window, 'addEventListener'),
+      vi.spyOn(document, 'addEventListener'),
+      vi.spyOn(globalThis, 'setTimeout'),
+      vi.spyOn(globalThis, 'setInterval'),
+      vi.spyOn(globalThis, 'requestAnimationFrame'),
+      vi.spyOn(globalThis, 'fetch'),
+      vi.spyOn(document, 'createElement'),
+    ];
+    const fb = vi.fn();
+    vi.doMock('../firebaseClient', () => {
+      fb();
+      return {};
+    });
+    vi.doMock('firebase/database', () => {
+      fb();
+      return {};
+    });
+    try {
+      const mod = await import('../Multiplayer?side-effects');
+      expect(typeof mod.Multiplayer).toBe('function');
+      for (const s of spies) expect(s, s.getMockName()).not.toHaveBeenCalled();
+      expect(fb).not.toHaveBeenCalled();
+    } finally {
+      for (const s of spies) s.mockRestore();
+      vi.doUnmock('../firebaseClient');
+      vi.doUnmock('firebase/database');
+    }
+  });
+});
+
+describe('the fishing bias starts with the cast (P2-B7, bobber.cjs at 400 ms after landing)', () => {
+  type Fish = { bobber: unknown; phase: string; dir: THREE.Vector3 };
+  const rig = () => {
+    const init = vi
+      .spyOn(GameScene.prototype as unknown as { initialize: () => Promise<void> }, 'initialize')
+      .mockResolvedValue(undefined);
+    const sc = new GameScene() as unknown as {
+      playerFishing: Fish;
+      player: unknown;
+      island: unknown;
+      orbitCamera: unknown;
+      fishBiasReleased: boolean;
+      fishBiasYaw0: number;
+      updateFishingBias(): void;
+      setInteractionFocus(p: THREE.Vector3, s: number): void;
+    };
+    init.mockRestore();
+    // The player stands on the shore at +Y; the cast lands 6 u out along +Z.
+    const R = 75;
+    const playerPos = new THREE.Vector3(0, R, 0);
+    const landing = new THREE.Vector3(0, R, 6);
+    sc.player = { getWorldPosition: () => playerPos.clone() };
+    sc.island = { seaLevel: () => landing.length() };
+    let yawTarget = 0.4;
+    const setInterestYaw = vi.fn();
+    sc.orbitCamera = { getYawTarget: () => yawTarget, setInterestYaw };
+    sc.playerFishing.bobber = {};
+    sc.playerFishing.dir = landing.clone().normalize();
+    sc.playerFishing.phase = 'fly';
+    sc.fishBiasYaw0 = yawTarget;
+    sc.fishBiasReleased = false;
+    const focus = vi.spyOn(sc, 'setInteractionFocus');
+    return { sc, focus, setInterestYaw, look: (y: number) => (yawTarget = y), playerPos };
+  };
+
+  test('in flight the focus sits square to the cast, and A gets 30 degrees', () => {
+    const { sc, focus, setInterestYaw, playerPos } = rig();
+    sc.updateFishingBias();
+    expect(focus).toHaveBeenCalledTimes(1);
+    const at = (focus.mock.calls[0][0] as THREE.Vector3).clone().sub(playerPos);
+    // (landing - player) x up for a +Z cast with +Y up is -X: the cast's right.
+    expect(at.x).toBeLessThan(-5);
+    expect(Math.abs(at.z)).toBeLessThan(0.5);
+    expect(setInterestYaw).toHaveBeenCalledWith(Math.PI / 6);
+  });
+
+  test('a look input releases it; idle and reduced motion never bias', async () => {
+    const { a11y } = await import('../Accessibility');
+    const a = rig();
+    a.look(0.9);
+    a.sc.updateFishingBias();
+    expect(a.focus).not.toHaveBeenCalled();
+    expect(a.sc.fishBiasReleased).toBe(true);
+    const b = rig();
+    b.sc.playerFishing.phase = 'idle';
+    b.sc.updateFishingBias();
+    expect(b.focus).not.toHaveBeenCalled();
+    const c = rig();
+    const was = a11y.reducedMotion;
+    a11y.reducedMotion = true;
+    try {
+      c.sc.updateFishingBias();
+    } finally {
+      a11y.reducedMotion = was;
+    }
+    expect(c.focus).not.toHaveBeenCalled();
+    expect(c.setInterestYaw).not.toHaveBeenCalled();
+  });
+
+  test('the cast arms it and the flight runs it', () => {
+    const s = stripped('GameScene.ts');
+    const cast = bodyOf(s, 'public tryCastLine(');
+    expect(cast).toContain('this.fishBiasReleased = false;');
+    const fly = bodyOf(s, "if (F.phase === 'fly') {");
+    expect(fly).toMatch(/this\.updateFishingBias\(\);\s*return;/);
   });
 });

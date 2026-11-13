@@ -26,7 +26,7 @@ import { WORLD_ERA } from './WorldScale';
  */
 
 export type RidingKind = 'boat' | 'jetski' | 'car' | null;
-type CircuitKind = 'land' | 'water';
+export type CircuitKind = 'land' | 'water';
 
 export interface RaceHudStatus {
   line1: string;
@@ -408,6 +408,22 @@ export class RaceSystem {
     }
 
     this.animateGates(circuitKind);
+  }
+
+  /**
+   * The next gate of the running race (P2-B7), for the race compass: its
+   * surface point (the gate's direction times its cached surface radius) is
+   * written into `out`, with no allocation. idx is the next gate's index
+   * (0 is the finish), n the circuit's gate count, kind the circuit. Null,
+   * and `out` untouched, when no race runs.
+   */
+  public getNextGate(out: THREE.Vector3): { idx: number; n: number; kind: CircuitKind } | null {
+    if (this.state !== 'running' || !this.active) return null;
+    const c = this.circuits[this.active];
+    if (!c || c.dirs.length === 0) return null;
+    const idx = this.nextIdx;
+    out.copy(c.dirs[idx]).multiplyScalar(c.surfaceR[idx]);
+    return { idx, n: c.dirs.length, kind: this.active };
   }
 
   private arm(kind: CircuitKind): void {
