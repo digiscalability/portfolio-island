@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const lib = require('./lib.cjs');
 
-const GROUPS = ['compass', 'keys', 'look', 'rig', 'frames', 'panels', 'a11y', 'events', 'guide', 'fm', 'keyboard', 'phone', 'breakpoints', 'census', 'intro', 'camera', 'lum', 'loco', 'npc', 'bubble', 'mobile', 'hybrid', 'touchparam', 'layout', 'slide', 'swim', 'env', 'texgen'];
+const GROUPS = ['compass', 'keys', 'look', 'rig', 'frames', 'panels', 'a11y', 'events', 'guide', 'fm', 'keyboard', 'phone', 'breakpoints', 'census', 'intro', 'camera', 'lum', 'loco', 'npc', 'bubble', 'mobile', 'hybrid', 'touchparam', 'layout', 'slide', 'swim', 'env', 'texgen', 'webp-edge'];
 // p2/*.cjs modules that are shared libraries, not probes.
 const P2_LIBS = new Set(['room-lib', 'L', 'play-lib', 'guide-lib']);
 
