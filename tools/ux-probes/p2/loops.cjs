@@ -433,87 +433,135 @@ async function faceWater(page) {
   return a;
 }
 
+/**
+ * A hard budget per cast and per hour (wave-4 carry-over): the live run of
+ * 2026-11-14 stalled after desktop cast 0 for over 20 min with Chrome busy
+ * and had to be stopped by PID. Past the budget the step is abandoned, the
+ * session is closed (which settles the abandoned evaluate) and the rows it
+ * feeds read null.
+ */
+const BOBBER_CAST_MS = 60000;
+const BOBBER_HOUR_MS = 45000;
+const STALLED = Symbol('stalled');
+async function within(ms, fn) {
+  let timer = null;
+  const work = fn();
+  work.catch(() => undefined);
+  try {
+    return await Promise.race([work, new Promise((r) => (timer = setTimeout(() => r(STALLED), ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function bobber(t) {
   const hours = String(t.args.hours || '12,18,21').split(',').map(Number);
+  // --cast-ms <n> shortens both budgets (the stall path is checked with --cast-ms 1500).
+  const castMs = Number(t.args.castMs) || BOBBER_CAST_MS;
+  const hourMs = Number(t.args.castMs) || BOBBER_HOUR_MS;
   for (const prof of t.profiles(['desktop', 'phone'])) {
-    const { page, touch, T } = await start(t, prof, { localStorage: { ds_rod: '1' } });
-    const out = { casts: [], bites: {} };
+    const { s, page, touch, T } = await start(t, prof, { localStorage: { ds_rod: '1' } });
+    const out = { casts: [], bites: {}, stalled: null };
     // The shore spots by the fisherman that offer a cast (up to 36 tried).
     const spots = [];
-    for (let k = 0; k < 36 && spots.length < 8; ) {
-      const sp = await toShore(page, k);
-      if (!sp) break;
-      spots.push(sp);
-      k = sp.k + 1;
-    }
+    const found = await within(150000, async () => {
+      for (let k = 0; k < 36 && spots.length < 8; ) {
+        const sp = await toShore(page, k);
+        if (!sp) break;
+        spots.push(sp);
+        k = sp.k + 1;
+      }
+      return true;
+    });
+    if (found === STALLED) out.stalled = 'the shore-spot search over 150 s';
     out.spots = spots.length;
-    const fp = await page.evaluate(() => window.__app.scene.fishermanPos().toArray());
     // Eight casts, cycling the spots, each with the chase camera settled
     // behind the avatar's facing (the view a visitor who walked up has).
-    for (let c = 0; c < 8 && spots.length; c++) {
+    for (let c = 0; c < 8 && spots.length && !out.stalled; c++) {
       const sp = spots[c % spots.length];
-      const sp2 = await reShore(page, sp);
-      if (sp2) Object.assign(sp, sp2);
-      await faceWater(page);
-      if (!/cast/i.test((await prompt(page)) || '')) {
-        const sp3 = await reShore(page, sp);
-        if (sp3) Object.assign(sp, sp3);
-      }
-      await page.evaluate(BEHIND);
-      await lib.sleep(500);
-      const r = await cast(page, touch, T);
-      await lib.sleep(400);
-      const v = await page.evaluate(FLOAT_VS_AVATAR);
-      out.casts.push({ spot: sp, landedMs: r.landedMs, ...(v || { float: null }) });
-      if (c === 0) await t.shot(page, `bobber-${prof}-cast0.png`);
-      await page.evaluate(() => {
-        const sc = window.__app.scene;
-        if (sc.isFishingActive()) sc.reelLine();
+      const done = await within(castMs, async () => {
+        const sp2 = await reShore(page, sp);
+        if (sp2) Object.assign(sp, sp2);
+        await faceWater(page);
+        if (!/cast/i.test((await prompt(page)) || '')) {
+          const sp3 = await reShore(page, sp);
+          if (sp3) Object.assign(sp, sp3);
+        }
+        await page.evaluate(BEHIND);
+        await lib.sleep(500);
+        const r = await cast(page, touch, T);
+        await lib.sleep(400);
+        const v = await page.evaluate(FLOAT_VS_AVATAR);
+        out.casts.push({ spot: sp, landedMs: r.landedMs, ...(v || { float: null }) });
+        if (c === 0) await t.shot(page, `bobber-${prof}-cast0.png`);
+        await page.evaluate(() => {
+          const sc = window.__app.scene;
+          if (sc.isFishingActive()) sc.reelLine();
+        });
+        await untilIdle(page, 4000);
+        return true;
       });
-      await untilIdle(page, 4000);
+      if (done === STALLED) out.stalled = `cast ${c} over ${castMs / 1000} s`;
     }
     const judged = out.casts.filter((c) => c.float);
     // Clear = not inside the avatar's projected box; a float off the edge of
     // the screen is counted apart (it is not hidden by the avatar, nor seen).
     const clear = judged.filter((c) => !c.inside).length;
     const off = judged.filter((c) => !c.onScreen).length;
-    t.check(`${prof}: the float clears the avatar's box in 7 of 8 casts`, judged.length >= 8 ? clear >= 7 : null, `${clear}/${judged.length} (off screen: ${off})`, '>= 7/8 (the audit, 58c8849: inside the box in 3 of 8)');
+    t.check(`${prof}: the float clears the avatar's box in 7 of 8 casts`, judged.length >= 8 ? clear >= 7 : null, `${clear}/${judged.length} (off screen: ${off})${out.stalled ? `; stalled at ${out.stalled}` : ''}`, '>= 7/8 (the audit, 58c8849: inside the box in 3 of 8)');
     // The bite at each hour, with its screenshot ('!' sprite where the build has it).
-    const env = await page.evaluate(() => 'debugHour' in window.__app.scene.getEnvironmentCycle());
+    // Each hour reads null on its own when no free shore spot is found, the
+    // bite is missed in 15 s or the hour runs past its budget.
+    const env = out.stalled ? false : await within(10000, () => page.evaluate(() => 'debugHour' in window.__app.scene.getEnvironmentCycle()));
     for (const h of hours) {
-      if (env) await page.evaluate((hh) => (window.__app.scene.getEnvironmentCycle().debugHour = hh), h);
-      await lib.sleep(800);
-      if (!spots.length) continue;
-      if (!(await reShore(page, spots[0]))) continue;
-      await faceWater(page);
-      await page.evaluate(BEHIND);
-      await lib.sleep(500);
-      const c0 = await cast(page, touch, T);
-      await lib.sleep(300);
-      const waiting = await page.evaluate(FLOAT_VS_AVATAR);
-      let got = null;
-      while (Date.now() - c0.t0 < 15000) {
-        if ((await page.evaluate(FISH)).biting) {
-          got = await page.evaluate(FLOAT_VS_AVATAR);
-          await t.shot(page, `bobber-${prof}-h${h}-bite.png`);
-          break;
+      if (out.stalled) {
+        out.bites[h] = { missing: `not run (stalled at ${out.stalled})` };
+        continue;
+      }
+      const got = await within(hourMs, async () => {
+        if (env === true) await page.evaluate((hh) => (window.__app.scene.getEnvironmentCycle().debugHour = hh), h);
+        await lib.sleep(800);
+        if (!spots.length || !(await reShore(page, spots[0]))) return { missing: 'no free shore spot' };
+        await faceWater(page);
+        await page.evaluate(BEHIND);
+        await lib.sleep(500);
+        const c0 = await cast(page, touch, T);
+        await lib.sleep(300);
+        const waiting = await page.evaluate(FLOAT_VS_AVATAR);
+        let bite = null;
+        while (Date.now() - c0.t0 < 15000) {
+          if ((await page.evaluate(FISH)).biting) {
+            bite = await page.evaluate(FLOAT_VS_AVATAR);
+            await t.shot(page, `bobber-${prof}-h${h}-bite.png`);
+            break;
+          }
+          await lib.sleep(60);
         }
-        await lib.sleep(60);
-      }
-      if (got) {
-        const before = new Set((waiting && waiting.near) || []);
-        const fresh = got.near.filter((u) => !before.has(u));
-        got.bang = fresh.length ? true : null;
-      }
-      out.bites[h] = got;
-      await page.evaluate(() => {
-        const sc = window.__app.scene;
-        if (sc.isFishingActive()) sc.reelLine();
+        if (bite) {
+          const before = new Set((waiting && waiting.near) || []);
+          const fresh = bite.near.filter((u) => !before.has(u));
+          bite.bang = fresh.length > 0;
+        }
+        await page.evaluate(() => {
+          const sc = window.__app.scene;
+          if (sc.isFishingActive()) sc.reelLine();
+        });
+        await untilIdle(page, 4000);
+        return bite || { missing: 'no bite in 15 s' };
       });
-      await untilIdle(page, 4000);
+      if (got === STALLED) {
+        out.stalled = `the ${h} h cast over ${hourMs / 1000} s`;
+        out.bites[h] = { missing: 'stalled' };
+      } else out.bites[h] = got;
     }
-    const bangs = Object.values(out.bites).filter(Boolean);
-    t.check(`${prof}: the bite shows the '!' sprite at ${hours.join(', ')} h`, bangs.length ? (bangs.every((b) => b.bang) ? true : bangs.some((b) => b.bang) ? false : null) : null, Object.fromEntries(Object.entries(out.bites).map(([h, b]) => [h, b ? b.bang : 'no bite'])), "a sprite above the float (null: this build has none)");
+    // 58c8849 has no '!' at all: with no bang at any hour the rows read null
+    // (this build has none), not fail.
+    const any = Object.values(out.bites).some((b) => b && b.bang === true);
+    for (const h of hours) {
+      const b = out.bites[h];
+      t.check(`${prof}: the bite shows the '!' sprite at ${h} h`, !b || b.missing || !any ? null : b.bang, b ? b.missing || (b.bang ? 'sprite' : 'no sprite') : 'not run', "a sprite above the float (null: no bite, no shore spot, or this build has none)");
+    }
+    if (out.stalled) await s.close().catch(() => undefined);
     t.data[prof] = out;
   }
 }
