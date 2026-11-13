@@ -616,7 +616,6 @@ every session, the port free afterwards, four other builders on the machine
 | `loader` | DA-10; D12 | desktop and phone. Every `*.woff2` and the fonts.googleapis.com CSS held back, and separately `/assets/main-*.js`, through `openSession`'s `onRoute`, then released in turn. Static run: the static loader's title in the FOUT frame, the faces released, the same title loaded, the bundle released, the JS loader with the faces in. JS run: the bundle first, the JS loader's title in the FOUT frame (its loaded frame is the static run's: once world gen starts the page answers nothing until the loader has gone). Title width is the text's own box (a Range). The phase diff: the share of viewport pixels (sum \|dRGB\| > 48) differing between the static and JS loaders with the faces in, outside `#ld-bar`'s track, `#ld-pct`, `#ld-msg` and `#load-phase`. Screenshots through CDP `Page.captureScreenshot` (`page.screenshot()` waits for web fonts, so it never sees the FOUT frame) | static title 778 px in Arial bold against 471 px in Bebas (1.65; the audit's 775/470 exactly), phone 368/289 (1.27); JS title 384/262 (1.47), phone 375/256; phase diff 2.67% desktop, 9.1% phone. Exits 1 | the same widths; phase diff 2.7% and 9.17%. Exits 1 |
 | `bundles` | PERF-12 | static, Node only (no browser; the leak and port rows do not apply): every chunk under `<dist>/assets`, raw, gzip-9 and brotli-11 (`zlib.brotliCompressSync`, quality 11); the main chunk's gzip also through perf-gate's exported `bundleSize` (level 6, within 1%); the Projects panel's '~280 KB app + 175 KB three.js (brotli)' read from the built main chunk against the measured brotli, within 5%, report only. `--compare <dist>` sizes a second build | main-FxtHGAB1.js 907.73 / 279.54 / 224.75 kB, three 657.05 / 168.78 / 138.41 kB (this local build of 58c8849; the audit's main-BT05EkBU.js read 886 / 273 / 219): the quote matches gzip, not brotli. Exits 0 | main-Dh-edStu.js 1,123.45 / 350.32 / 280.20 kB (perf-gate: 351.48 gzip), three 657.12 / 168.81 / 138.48 kB; '~280 KB app' now matches brotli by growth, '175 KB three.js' does not (138.5). 10 chunks, 757.48 kB gzip in all. Exits 0 |
 | `mobile` (plateau rows) | B3 | the phone, trusted CDP touches: the stick held at 0.15 and 0.7 of its own radius (the ring's half-width, found from the 166 px hit square as today; 55 px on both builds) for 1.8 s: the speed. B3 wants 2.0 ±0.2 and 5.6 ±0.3 u/s | 5.6 and 5.6 u/s. 0.15 fails | 5.6 and 8.12 u/s (0.7 of the radius already runs, A11's touch run). Both fail |
-<!-- e6d-rows -->
 
 ### Phase-2 probes, wave 4 (P2-E2d)
 
@@ -636,7 +635,15 @@ not exist).
 | `p2/coinhunt` | GP-04; P2-A9 | desktop, a fresh visitor on the default world (`__dsSeedDraws` 80842), the card dismissed, First steps skipped, the frozen sim at 1/60 s: the arrival trail walked nearest-first, the total after it; then 3 simulated minutes (`--minutes`) aiming the chase camera at the nearest standing meadow coin with W held (a walk; `--run` adds the run key), re-aimed every 0.25 s, a coin not reached in 12 s skipped: coins per minute. Also the meadow coins within 30 u of the spawn. P2-A9's in-repo before-number | 17.7/min at a walk (the audit's live hunter: 13/min; this steering is perfect and frame-exact), 2 of 80 meadow coins within 30 u (the audit exactly), 5 coins after the trail. Exits 0 | 17.0/min at a walk (20.0 with `--run`, Shift), 2 of 80, 5 after the trail. Exits 0 |
 | `p2/race --legs` | GP-03; P2-A8 | desktop: every consecutive ring spacing on both circuits (ring i to i+1, the last back to the finish), great-circle u, against the chase camera's horizon on foot, sqrt(2 R h) with h the camera's height over the player's feet. Reported | land 5 legs of 115.5 u, water 6 of 103.9 u, horizon 16.5 u (h 1.37 u): every leg over it (the audit exactly). Exits 0 | the same. Exits 0 |
 | `p2/race --circuit water --craft boat` | GP-03; P2-A8 | desktop: the boat parked nearest the water start, boarded where it lies, then the gates driver (steering by the rings' own positions) for 49 s, backing out after 4 s aground. A beaching: the throttle held, the bow (1.5 u ahead) over land and the hull stopped, counted again only after 0.5 s afloat. Checkpoints passed after the start ring | 0 of 5 checkpoints (the audit exactly), 1 beaching: this driver grinds along the cove's shore instead of re-beaching (the audit's driver: 9). Exits 1 | 2 of 5 checkpoints, 3 beachings in this run (the count follows the steer; provisional). Exits 1 |
-<!-- p2e2d-rows -->
+
+The in-repo economy baseline at fcaa649 (`deploy-w3/dist`, 2026-11-14,
+`?hour=12`, desktop), P2-A9's before-numbers in place of the Vercel export:
+`p2/tour` 6 coins after the four districts (the trail's 5 and one meadow
+coin; 2 min, 4 stamps, 1 secret); `p2/quests` six School presses pay +60;
+`p2/coinhunt` 5 coins after the trail, then 17.0 coins a minute at a walk
+(20.0 running), 2 of 80 meadow coins within 30 u of the spawn. The
+delivery-hop delta (main 0) is `p2/gather`'s row, a carry-over for the next
+pass.
 
 ### Probe fixes from the wave-2 integration
 
@@ -1195,6 +1202,12 @@ resolves.
   `duskflip.cjs`, `journey.cjs`, and the `room-lib.cjs`, `L.cjs`,
   `play-lib.cjs` and `guide-lib.cjs` libraries.
 - Stage 2, wave 2: `intro.cjs`, `camera.cjs`, `lum.cjs`.
+- Stage 2, wave 4 (E6d): `slide.cjs`, `swim.cjs`, `env.cjs`, `texgen.cjs`,
+  `webp-edge.cjs`, `fonts.cjs`, `loader.cjs`, `bundles.cjs` (static, Node
+  only), and `mobile.cjs`'s plateau rows.
+- Phase 2, wave 4 (P2-E2d), in `p2/`: `feed.cjs`, `landmarks.cjs` (its
+  `PROJECT_BOARDS` fixture pinned by `test/probeSafety`), `build.cjs`,
+  `coinhunt.cjs`, and `play.cjs`'s `p2/race --legs` and `--craft boat`.
 - Phase 2, wave 2, in `p2/`: `light.cjs` (daycycle, weather, beacons,
   shadowdraws, edge-crawl), `rooms.cjs` (room-a11y, room-phone, room-light,
   room-rig, avlum, warmtest, room-census), `guidance.cjs` (recruiter, npcs,
