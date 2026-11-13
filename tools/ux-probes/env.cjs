@@ -450,6 +450,10 @@ async function env(t) {
 module.exports = {
   env: { item: 'E6d (MOT-16, MOT-22; B9, C9)', title: 'world juice by pixels: the coin pop above the head (8 frames over 450 ms), canopy travel per 6 s at 20-40 u (`--part coin|canopy`)', profiles: ['desktop'], run: env },
   isGold,
+  ENV_LIB,
+  COIN_SETUP,
+  AIM_COIN,
+  COIN_FRAME,
   peak,
   silhouetteTop,
 };

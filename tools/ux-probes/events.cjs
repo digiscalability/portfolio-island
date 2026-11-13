@@ -13,6 +13,8 @@
 // - P2-A5: a 'ds:guide-to' {key:'school'} sets the compass label to School
 //   within one frame;
 // - D4: closing the hire card dispatches 'ds:modal' {open:false, id:'zone', zone:'hire'}.
+// - B9 (wave 4): walking onto one meadow coin dispatches exactly one ds:coin
+//   {x, y, value: 1} per coin gained (null on a build without it).
 const lib = require('./lib.cjs');
 
 const EVENTS_INIT = `(() => {
@@ -49,8 +51,74 @@ async function introLoad(t, prof, label, { reducedMotion = false, query = '' } =
   return { label, boot: b, phases, all: evs.map((e) => `${(e.t / 1000).toFixed(2)}s ${e.type} ${JSON.stringify(e.detail)}`.slice(0, 160)), s };
 }
 
+/**
+ * B9 (wave-4 rows list): walk onto one meadow coin on the frozen 1/60 s sim
+ * (env.cjs's setup: 3.5 u short of the nearest meadow coin, facing it), then
+ * step one more second. ds:coin must fire exactly once per coin gained, with
+ * its values summing to the gain. Null on a build that never dispatches it.
+ */
+async function coinOnce(t, prof) {
+  const E = require('./env.cjs');
+  const s = await t.session(prof, { init: [EVENTS_INIT], clock: true });
+  const { page } = s;
+  const out0 = {};
+  await t.boot(s);
+  await lib.dismissWelcome(page);
+  await page.waitForTimeout(1500);
+  await page.evaluate(E.ENV_LIB);
+  // --selftest-coin once|twice: wrap collectMeadowCoin to dispatch B9's event
+  // once (the row must pass) or twice (it must fail) on a build without it.
+  const self = t.args.selftestCoin && t.args.selftestCoin !== true ? String(t.args.selftestCoin) : null;
+  if (self)
+    out0.selftest = await page.evaluate((times) => {
+      const sc = window.__app.scene;
+      const orig = sc.collectMeadowCoin;
+      if (typeof orig !== 'function') return 'no collectMeadowCoin';
+      sc.collectMeadowCoin = function (...a) {
+        const r = orig.apply(this, a);
+        for (let i = 0; i < times; i++) window.dispatchEvent(new CustomEvent('ds:coin', { detail: { x: 1, y: 1, value: 1 } }));
+        return r;
+      };
+      return `ds:coin x${times} per collectMeadowCoin`;
+    }, self === 'twice' ? 2 : 1);
+  const set = await page.evaluate(E.COIN_SETUP);
+  const out = { ...out0, setup: set };
+  if (set) {
+    await page.waitForTimeout(900);
+    for (let k = 0; k < 4; k++) {
+      await page.evaluate(E.AIM_COIN);
+      await page.waitForTimeout(250);
+    }
+    await page.waitForTimeout(600);
+    await page.evaluate(lib.FREEZE);
+    await page.evaluate(() => (window.__env.headH = window.__env.headTopH()));
+    const since = await page.evaluate(() => performance.now());
+    const n0 = await page.evaluate(() => window.__h.sc.getCoinsCollected());
+    await page.keyboard.down('w');
+    let at = null;
+    for (let f = 0; f < 150 && at === null; f++) if ((await page.evaluate(E.COIN_FRAME)).n > n0) at = f;
+    await page.keyboard.up('w');
+    // One more second, standing: a late or repeated dispatch shows here.
+    if (at !== null) for (let f = 0; f < 60; f++) await page.evaluate(E.COIN_FRAME);
+    const n1 = await page.evaluate(() => window.__h.sc.getCoinsCollected());
+    await page.evaluate(lib.THAW);
+    const evs = await eventsOf(page, { type: 'ds:coin', since: Math.floor(since) });
+    Object.assign(out, { collectedAtFrame: at, gained: n1 - n0, dsCoin: evs.map((e) => e.detail), valueSum: evs.reduce((a, e) => a + ((e.detail && Number(e.detail.value)) || 0), 0) });
+  }
+  const ok = out.gained > 0 && out.dsCoin && out.dsCoin.length ? out.dsCoin.length === out.gained && out.valueSum === out.gained : null;
+  const why = !set ? 'no meadow coin list on this build' : !(out.gained > 0) ? 'the coin was never collected' : out.dsCoin.length ? `${out.dsCoin.length} ds:coin for ${out.gained} coin(s), values ${out.valueSum}` : 'no ds:coin on this build (B9 adds it)';
+  t.check(`${prof}: ds:coin fires exactly once per pickup, walking onto one meadow coin (B9)`, ok, why, 'one per coin, values summing to the gain (null: no ds:coin on this build)');
+  if (out.dsCoin && out.dsCoin.length) t.check(`${prof}: ds:coin's detail carries x, y and value (B9)`, out.dsCoin.every((d) => d && Number.isFinite(d.x) && Number.isFinite(d.y) && d.value === 1), out.dsCoin[0], '{x, y, value: 1}');
+  await s.close();
+  return out;
+}
+
 async function events(t) {
   const runs = [];
+  // --part intro|coin (both by default).
+  const part = t.args.part && t.args.part !== true ? String(t.args.part) : null;
+  if (!part || part === 'coin') if (!t.args.profile || t.args.profile === 'desktop') t.data.coin = await coinOnce(t, 'desktop');
+  if (part === 'coin') return;
   for (const [prof, label, opts] of [
     ['desktop', 'desktop', {}],
     ['phone', 'phone', {}],
@@ -115,7 +183,7 @@ async function events(t) {
 }
 
 module.exports = {
-  events: { item: 'A8, P2-A5, D4 (E6a)', title: "window 'ds:*' events: one ds:intro start and settled per load, ds:guide-to, the hire card's ds:modal", profiles: ['desktop', 'phone'], run: events },
+  events: { item: 'A8, P2-A5, D4 (E6a); B9 (wave 4)', title: "window 'ds:*' events: one ds:intro start and settled per load, ds:guide-to, the hire card's ds:modal, ds:coin once per pickup (`--part intro|coin`)", profiles: ['desktop', 'phone'], run: events },
   EVENTS_INIT,
   eventsOf,
 };
