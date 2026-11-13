@@ -346,7 +346,12 @@ const RACE_STEER = ({ driver }) => {
   const next = c.dirs[r.state === 'running' ? r.nextIdx : 0].clone().normalize();
   const dist = up.angleTo(next) * R;
   let rel;
-  if (driver === 'compass') {
+  // The compass steers only once the race runs. Before the start there is no
+  // ring on the pill (often no pill at all: rel null drives straight on), so
+  // the car never crossed the start line and the race never began (0
+  // checkpoints in 150 s on both builds). Until then it steers to the start
+  // line, as the gates driver does.
+  if (driver === 'compass' && r.state === 'running') {
     // Only what the pill shows: its arrow's screen bearing (A1's sign: + is clockwise, to the right).
     const a = window.__h.arrow();
     rel = a ? a.rel : null;
