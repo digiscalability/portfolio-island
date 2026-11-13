@@ -546,6 +546,7 @@ describe('main-simple: run intent, first-use hint gates and heel-strike footfall
   test('a first-use hint waits while any panel, card, interior, tour, talk, guide or Next list is up', () => {
     const quietWith = (o: Partial<Record<string, boolean>>): boolean =>
       proto.hintsQuiet.call({
+        racing: !!o.racing,
         ui: { panels: { isOpen: () => !!o.panel }, isWelcomeVisible: () => !!o.welcome },
         scene: { isInsideInterior: () => !!o.interior },
         tour: o.tour ? {} : null,
@@ -554,7 +555,16 @@ describe('main-simple: run intent, first-use hint gates and heel-strike footfall
         nextChip: { isExpanded: () => !!o.next },
       }) as boolean;
     expect(quietWith({})).toBe(false);
-    for (const gate of ['panel', 'welcome', 'interior', 'tour', 'talk', 'guide', 'next']) {
+    for (const gate of [
+      'racing',
+      'panel',
+      'welcome',
+      'interior',
+      'tour',
+      'talk',
+      'guide',
+      'next',
+    ]) {
       expect(quietWith({ [gate]: true }), gate).toBe(true);
     }
   });

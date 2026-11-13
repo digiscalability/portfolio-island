@@ -49,6 +49,8 @@ export function compassBearing(camForward: Vec3Like, toTarget: Vec3Like, normal:
  * Where the pill points, one target at a time (A7, with P2-A3's order).
  *
  * The first available source wins:
+ * 0. a running race: the next ring, or the finish line (P2-A8). Nothing
+ *    else may take the pill mid-lap, a map pick included;
  * 1. the island-map pick, and for 8 s after it is reached, the arrival hold;
  * 2. the race-start guide;
  * 3. meet-the-townsfolk;
@@ -72,6 +74,7 @@ export function compassBearing(camForward: Vec3Like, toTarget: Vec3Like, normal:
  * 10. nothing.
  */
 export type CompassSource =
+  | 'racing'
   | 'map'
   | 'hold'
   | 'race'
@@ -84,6 +87,8 @@ export type CompassSource =
   | 'goal';
 
 export interface CompassState {
+  /** A race is running: the pill names the next ring (P2-A8). */
+  racing: boolean;
   /** An island-map pick (or a 'ds:guide-to' key) is set. */
   mapPick: boolean;
   /** A map pick was reached under 8 s ago: the pill holds on it. */
@@ -118,6 +123,7 @@ export interface CompassState {
 }
 
 export function compassTarget(s: CompassState): CompassSource | null {
+  if (s.racing) return 'racing';
   if (s.mapPick) return 'map';
   if (s.arrivalHold) return 'hold';
   if (s.raceGuide) return 'race';

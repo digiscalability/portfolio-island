@@ -119,6 +119,15 @@ try {
   /* no storage — attribution is best-effort */
 }
 
+/**
+ * GameScene accessors from a package that merges after A in wave 4, read
+ * through optional calls so this branch is green on its own (P2-A8): B's
+ * nearest unoccupied vehicle of a kind, written into `out` with no allocation.
+ */
+type RaceScene = GameScene & {
+  nearestVehiclePos?: (kind: 'car' | 'boat' | 'jetski', out: THREE.Vector3) => THREE.Vector3 | null;
+};
+
 /** One stop on the cinematic tour rail (SimpleApp.startTour). */
 interface TourStop {
   caption: string;
@@ -216,6 +225,16 @@ export class SimpleApp {
   private readonly districtDists: Array<{ id: string; dist: number }> = [];
   // "Beat the lap record" CTA → compass points at the start gate until a race starts
   private raceGuideTarget: THREE.Vector3 | null = null;
+  /** P2-A8: the CTA's guide leads to a parked car first, then the start. */
+  private raceGuideViaCar = false;
+  /** P2-A8: a race runs (set on 'start', cleared on 'finish' and 'abort').
+   *  While it is set, main-simple's unprompted hints wait and keep their
+   *  once-ever keys (guideHoldsHints, hintsQuiet). */
+  private racing = false;
+  /** P2-A8: the next ring, written by getRaceNextGate (no allocation). */
+  private readonly _qcRaceGate = new THREE.Vector3();
+  /** P2-A8: the nearest parked car, written by nearestVehiclePos. */
+  private readonly _qcCar = new THREE.Vector3();
 
   // Tour mode: a skippable cinematic rail over the districts for the visitor
   // who won't touch WASD (the Breton camera-rail pattern from the audit).
@@ -2559,6 +2578,9 @@ export class SimpleApp {
    * the visitor's name (P2-A7).
    */
   private onRaceEvent(e: RaceEvent): void {
+    // P2-A8 quiet laps: hints wait from 'Go!' to the finish or the abort.
+    if (e.kind === 'start') this.racing = true;
+    else if (e.kind === 'finish' || e.kind === 'abort') this.racing = false;
     if (e.kind === 'finish') {
       sfx.questComplete();
       // Racing paid NOTHING before — the most complete loop in the game had
@@ -2622,6 +2644,7 @@ export class SimpleApp {
     if (e.kind === 'start') {
       sfx.raceGo();
       this.raceGuideTarget = null; // the guide CTA is fulfilled
+      this.raceGuideViaCar = false;
       track('race_start', { circuit: e.circuit ?? 'unknown' });
     } else if (e.kind === 'checkpoint') sfx.checkpoint();
   }
@@ -4072,6 +4095,11 @@ export class SimpleApp {
       !trailPos && (passport?.count() ?? 0) === 0 ? (this.guide?.talkTargetNow() ?? null) : null;
     const talkPos = talkWho ? this.scene.getNpcPosition(talkWho) : null;
     const st = this._compassState;
+    // P2-A8: a running race has the pill, ring by ring. A race that ended
+    // without its event (a teardown) lets the quiet-laps flag go here too.
+    const gate = this.scene.getRaceNextGate?.(this._qcRaceGate) ?? null;
+    if (!gate) this.racing = false;
+    st.racing = gate !== null;
     st.mapPick = this.mapGuideTarget !== null;
     st.arrivalHold = this.arrivalHold !== null;
     // Behind the welcome card, while First steps will arm as it closes, the
@@ -4092,6 +4120,12 @@ export class SimpleApp {
     let targetPos: THREE.Vector3 | null = null;
     let label = '';
     switch (compassTarget(st)) {
+      case 'racing':
+        // Rings are 1..n-1 in order; index 0 is the start gate, which is
+        // also the finish once every ring is through.
+        targetPos = this._qcRaceGate;
+        label = gate && gate.idx >= 1 ? `🏁 Ring ${gate.idx}/${gate.n - 1}` : '🏁 Finish line';
+        break;
       case 'map':
         // Island-map pick or a 'ds:guide-to' key: explicit intent, until reached.
         targetPos = this.mapGuideTarget;
@@ -4102,9 +4136,21 @@ export class SimpleApp {
         label = this.arrivalHold?.label ?? '';
         break;
       case 'race':
-        // "Beat the lap record" CTA, cleared when a race starts.
+        // "Beat the lap record" CTA, cleared when a race starts. From the
+        // CTA it leads to the nearest parked car until the visitor drives
+        // one, then to the start gate (P2-A8). Without B's accessor, the gate.
         targetPos = this.raceGuideTarget;
         label = '🏁 Race start';
+        if (this.raceGuideViaCar) {
+          const inCar = this.scene.isRidingVehicle() && this.scene.getActiveVehicleKind() === 'car';
+          const car = inCar
+            ? null
+            : ((this.scene as RaceScene).nearestVehiclePos?.('car', this._qcCar) ?? null);
+          if (car) {
+            targetPos = car;
+            label = '🚗 Grab a car';
+          }
+        }
         break;
       case 'ai':
         // "Ask the townsfolk": cleared once the visitor talks to an AI villager.
@@ -4217,6 +4263,7 @@ export class SimpleApp {
 
   /** Reused by updateQuestCompass every frame (no allocation). */
   private readonly _compassState: CompassState = {
+    racing: false,
     mapPick: false,
     arrivalHold: false,
     guidePending: false,
@@ -4799,6 +4846,9 @@ export class SimpleApp {
   /** While the guide runs, or may arm as the welcome card closes, main-simple
    *  fires no unprompted hints: talk, coin, lost, district, specials. */
   private guideHoldsHints(): boolean {
+    // A running race holds them too (P2-A8 quiet laps): nothing fires and
+    // no ds_hint_* key burns between 'Go!' and the finish or the abort.
+    if (this.racing) return true;
     const g = this.guide;
     if (!g) return false;
     // The recruiter route holds them the same way while it is up.
@@ -6003,6 +6053,7 @@ export class SimpleApp {
     const pos = this.scene.getRaceStartPosition('land') ?? this.scene.getRaceStartPosition('water');
     if (!pos) return;
     this.raceGuideTarget = pos;
+    this.raceGuideViaCar = true;
     this.ui.flashMessage(
       '\ud83c\udfc1 Follow the compass to the start gate \u2014 grab a car and drive through the glowing rings',
     );
@@ -6155,6 +6206,7 @@ export class SimpleApp {
    */
   private hintsQuiet(): boolean {
     return (
+      this.racing ||
       this.ui.panels.isOpen() ||
       this.ui.isWelcomeVisible() ||
       this.scene.isInsideInterior() ||

@@ -1859,3 +1859,25 @@ describe('wave-3 integration: the next-parcel line is not stuck behind the pack 
     expect(line).toBeGreaterThan(bump);
   });
 });
+
+describe('wave 4 P2-A8: the compass leads a race ring by ring, and laps are quiet', () => {
+  test('updateQuestCompass reads the next gate into a reused scratch and labels the ring', () => {
+    const u = bodyOf(stripped('main-simple.ts'), 'private updateQuestCompass(): void {');
+    expect(u).toContain('this.scene.getRaceNextGate?.(this._qcRaceGate) ?? null');
+    expect(u).toContain('st.racing = gate !== null;');
+    expect(u).toContain('`🏁 Ring ${gate.idx}/${gate.n - 1}`');
+    expect(u).toContain("'🏁 Finish line'");
+    expect(u).toContain("nearestVehiclePos?.('car', this._qcCar)");
+  });
+
+  test("'start' sets the racing flag and 'finish' or 'abort' clears it; it holds every hint", () => {
+    const s = stripped('main-simple.ts');
+    const ev = bodyOf(s, 'private onRaceEvent(e: RaceEvent): void {');
+    expect(ev).toContain("if (e.kind === 'start') this.racing = true;");
+    expect(ev).toContain(
+      "else if (e.kind === 'finish' || e.kind === 'abort') this.racing = false;",
+    );
+    expect(bodyOf(s, 'private guideHoldsHints(')).toContain('if (this.racing) return true;');
+    expect(bodyOf(s, 'private hintsQuiet(')).toContain('this.racing ||');
+  });
+});
