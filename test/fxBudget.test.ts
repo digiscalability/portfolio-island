@@ -1308,3 +1308,26 @@ describe('perf gate: the canopySway bars', () => {
     expect(gate.fxBar('dust', 'programs', 5)).toBe(5);
   });
 });
+
+// Wave-3 E review nit (wave-4 amendments, carry-over): MODAL_INIT, BUSY and
+// the modal helpers were inserted between modeFx's JSDoc and modeFx, so the
+// JSDoc documented MODAL_INIT. It sits directly above modeFx again.
+describe('perf gate: modeFx keeps its JSDoc (wave-3 E review nit)', () => {
+  test("the '--fx <name>' JSDoc is the block right above async function modeFx", () => {
+    const req = createRequire(import.meta.url);
+    const fs = req('node:fs') as typeof import('node:fs');
+    const path = req('node:path') as typeof import('node:path');
+    const src = fs
+      .readFileSync(path.resolve(__dirname, '../tools/perf-gate.cjs'), 'utf8')
+      .replace(/\r\n/g, '\n');
+    const at = src.indexOf('\nasync function modeFx(');
+    expect(at).toBeGreaterThan(0);
+    const before = src.slice(0, at);
+    const open = before.lastIndexOf('/**');
+    expect(before.slice(open)).toMatch(
+      /^\/\*\*\n \* --fx <name>: the effect starts OFF[\s\S]*\*\/$/,
+    );
+    expect(src.slice(open - 200, open)).not.toMatch(/MODAL_INIT/);
+    expect(src.indexOf('--fx <name>: the effect starts OFF')).toBe(open + 7);
+  });
+});

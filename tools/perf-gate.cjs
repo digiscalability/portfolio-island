@@ -1801,13 +1801,6 @@ const FX_PAIR = ({ name }) => {
   return { off, on };
 };
 
-/**
- * --fx <name>: the effect starts OFF before any page script runs. 30 s after
- * the card, each view is posed and measured with 4 off/on pairs (FX_PAIR:
- * whole-frame draws, triangles and programs per side, nothing moving in
- * between); programs the ON sides add are the effect's. Then 6 x 1.5 s per
- * side of timing at the spawn, escalating like --ab.
- */
 // E4's modal scenario: main-thread busy time (long tasks and long animation
 // frames, merged, per second) and Event Timing durations for taps on the
 // panel's buttons, recorded from the first script.
@@ -2009,6 +2002,13 @@ async function fxRoomEnter(session) {
   return { room: ROOM_ID, press: e.press, inside };
 }
 
+/**
+ * --fx <name>: the effect starts OFF before any page script runs. 30 s after
+ * the card, each view is posed and measured with 4 off/on pairs (FX_PAIR:
+ * whole-frame draws, triangles and programs per side, nothing moving in
+ * between); programs the ON sides add are the effect's. Then 6 x 1.5 s per
+ * side of timing at the spawn, escalating like --ab.
+ */
 async function modeFx(args) {
   const name = String(args.fx);
   // E4's modal divisor is measured behind a panel on the 4x low tier, not by off/on frame pairs.
