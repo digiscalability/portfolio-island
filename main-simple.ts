@@ -2108,8 +2108,24 @@ export class SimpleApp {
     });
   }
 
+  /**
+   * A hall's own panel, opened by walking in ('proximity' alone stamps the
+   * passport). P2-A9: the stamp pays HERE, not on refreshCompletion's 2.5 s
+   * cadence, which paid each +5 one tour stop late (probe: 1, 7, 15, 21 coins
+   * at the four stops, the last +5 after the completion card).
+   */
+  private openHallPanel(zone: { id: string; name: string }): void {
+    try {
+      this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
+    } finally {
+      this.payStamps();
+    }
+  }
+
   /** Passport complete: grant + auto-equip the Golden Crown, persist, celebrate. */
   private grantPassportReward(): void {
+    // P2-A9: the fourth stamp's +5 lands before the card that counts coins.
+    this.payStamps();
     const hat = 'crown';
     if (!this.ownedHats.has(hat)) {
       this.ownedHats.add(hat);
@@ -2590,10 +2606,7 @@ export class SimpleApp {
         });
       });
     } else if (hs.action === 'panel' && this.insideZone) {
-      this.ui.showZonePanel(
-        { id: this.insideZone.id, name: this.insideZone.name },
-        { source: 'proximity' },
-      );
+      this.openHallPanel(this.insideZone);
     } else if (hs.text) {
       this.ui.flashMessage(hs.text);
     }
@@ -2706,7 +2719,7 @@ export class SimpleApp {
       this.ui.showLeaveButton(() => this.exitBuilding(isZone), title);
       if (isZone && zone) {
         try {
-          this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
+          this.openHallPanel(zone);
         } catch (e) {
           console.warn('Zone panel failed inside the building:', e);
         }

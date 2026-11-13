@@ -709,6 +709,59 @@ describe('main-simple: the first-visit economy (P2-A9)', () => {
     expect(t.coins()).toBe(5);
   });
 
+  test('a hall stamp pays at the stamp, and the fourth before the completion card', () => {
+    // Integration probe (p2/tour, w4-int): coins 1, 7, 15, 21 at the four
+    // stops; each +5 waited for refreshCompletion's 2.5 s cadence, so the
+    // last landed after the 'Portfolio complete' card read 'Coins earned 21'.
+    const s = stub();
+    let stamps = 0;
+    let onComplete: (() => void) | null = null;
+    const cardCoins: number[] = [];
+    s.app.passport = { count: () => stamps };
+    s.app.payStamps(); // boot: the record starts at 0
+    Object.assign(s.app, {
+      ownedHats: new Set<string>(),
+      equippedHat: null,
+      goalsWereOn: false,
+      multiplayer: null,
+      syncGoals: () => undefined,
+      publishGoals: () => undefined,
+      openHallPanel: p.openHallPanel.bind(s.app),
+      grantPassportReward: p.grantPassportReward.bind(s.app),
+    });
+    Object.assign(s.app.scene as object, { equipPlayerHat: () => undefined });
+    onComplete = s.app.grantPassportReward as () => void;
+    Object.assign(s.app.ui as object, {
+      // SimpleUI.showZonePanel: a 'proximity' open stamps the passport, and the
+      // last stamp fires onComplete inside the call.
+      showZonePanel: (_z: unknown, o: { source: string }) => {
+        if (o.source !== 'proximity') return;
+        stamps += 1;
+        if (stamps === 4) onComplete?.();
+      },
+      showPassportComplete: () => cardCoins.push(s.coins()),
+    });
+    const after: number[] = [];
+    for (const id of ['professional', 'projects', 'personal', 'contact']) {
+      (s.app.openHallPanel as (z: { id: string; name: string }) => void)({ id, name: id });
+      after.push(s.coins());
+    }
+    expect(after).toEqual([5, 10, 15, 20]);
+    expect(cardCoins).toEqual([20]);
+    // the cadence that follows pays nothing twice
+    s.app.payStamps();
+    expect(s.coins()).toBe(20);
+    // a panel that throws still pays the stamp it landed
+    (s.app.ui as { showZonePanel: unknown }).showZonePanel = () => {
+      stamps += 1;
+      throw new Error('panel');
+    };
+    expect(() =>
+      (s.app.openHallPanel as (z: { id: string; name: string }) => void)({ id: 'x', name: 'x' }),
+    ).toThrow('panel');
+    expect(s.coins()).toBe(25);
+  });
+
   test('six School presses pay exactly +10 on a fresh visitor; a first cast then pays +10', () => {
     const s = stub();
     for (let i = 0; i < 6; i++) s.app.openSchool();
