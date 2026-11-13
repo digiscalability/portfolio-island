@@ -1481,7 +1481,9 @@ kbd.kc {
   }
 }
 /* Filled actions (the primary and Work-with-me fills) darken on hover and
-   press, so white text never drops below AA, where the chips' brighten would. */
+   press. The filter dims the white label with the fill, so the pair keeps
+   4.5:1 only while k stays at 0.85 or above (tokens.test checks label × k
+   against fill × k; brightness(0.7) would drop the primary to 4.2:1). */
 .ds-press:hover,
 .hud-btn.ds-press:hover {
   filter: var(--ds-hover-filter);

@@ -2884,7 +2884,7 @@ export class SimpleUI {
       <textarea id="lead-msg" aria-label="Your message" autocomplete="off" placeholder="A role, a project, or a question" maxlength="1000" rows="3" style="${field}resize:vertical;"></textarea>
       <button id="lead-send" style="width:100%;${this.isTouch ? 'min-height:44px;' : ''}padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
       <p id="lead-error" role="alert" hidden style="margin:8px 0 0;font-size:13px;line-height:1.4;color:#ffb4a8;"></p>
-      <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;${this.isTouch ? 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;' : ''}">Privacy</a></p>`;
+      <p style="margin:8px 0 0;font-size:12px;color:#889;">Your email is used only to reply. <a href="/privacy.html" target="_blank" rel="noopener" style="color:#b39ddb;${this.isTouch ? 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;' : ''}">Privacy</a></p>`;
     container.appendChild(form);
     // Keep keystrokes out of the game while typing.
     form
