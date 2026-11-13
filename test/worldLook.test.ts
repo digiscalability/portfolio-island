@@ -2200,3 +2200,54 @@ describe('C10: the roof markers paint the HUD glyphs, never an emoji', () => {
     expect(stripped('Zones.ts')).not.toMatch(/Segoe UI Emoji|Noto Color Emoji/);
   });
 });
+
+describe('C7: the CBD towers in the island style, with no facade canvases', () => {
+  test('the facade generator is gone, and its measured draws are burned before the checkpoint', () => {
+    expect(stripped('TextureGenerator.ts')).not.toContain('createBuildingTextures');
+    expect(stripped('Island.ts')).not.toContain('createBuildingTextures');
+    expect(stripped('Island.ts')).toMatch(
+      /burnDraws\(CBD_FACADE_DRAWS\);\s*Island\.seedMark\('island:buildingTextures'\);/,
+    );
+    expect(stripped('Island.ts')).toContain('export const CBD_FACADE_DRAWS = 450;');
+    // The plain box's 4 draws are burned and the tower is built on a local stream.
+    expect(stripped('Island.ts')).toMatch(
+      /burnDraws\(4\);\s*const bGeom = withLocalRng\(\(\) => buildCbdTowerGeometry\(i\), 0xc7b10000 \+ i\);/,
+    );
+  });
+
+  test('a tower is one two-tone vertex-coloured geometry with a parapet above the roof', async () => {
+    const { buildCbdTowerGeometry, CBD_TONES } = await import('../Island');
+    const g = buildCbdTowerGeometry(0);
+    const pos = g.getAttribute('position');
+    const col = g.getAttribute('color');
+    expect(col).toBeDefined();
+    expect(col.count).toBe(pos.count);
+    g.computeBoundingBox();
+    const bb = g.boundingBox as THREE.Box3;
+    // The body spans the old box's 5.2 u, centred; the parapet stands 0.35 u over it.
+    expect(bb.min.y).toBeCloseTo(-2.6, 5);
+    expect(bb.max.y).toBeCloseTo(2.95, 5);
+    expect(bb.max.x).toBeLessThanOrEqual(1.56);
+    const tones = new Set<string>();
+    for (let k = 0; k < col.count; k++) {
+      tones.add(`${col.getX(k).toFixed(3)},${col.getY(k).toFixed(3)},${col.getZ(k).toFixed(3)}`);
+    }
+    // Body, base course and trim: the body's tone and the stone base are the two facade tones.
+    expect(tones.size).toBe(3);
+    const hex = (c: number): string => {
+      const v = new THREE.Color(c);
+      return `${v.r.toFixed(3)},${v.g.toFixed(3)},${v.b.toFixed(3)}`;
+    };
+    expect(tones).toContain(hex(CBD_TONES.bodies[0]));
+    expect(tones).toContain(hex(CBD_TONES.base));
+    expect(tones).toContain(hex(CBD_TONES.trim));
+    // It mints uuids (so it is built shielded); under withLocalRng the
+    // stream around it takes none of them.
+    const { withLocalRng } = await import('../WorldSeed');
+    const r = vi.spyOn(Math, 'random');
+    withLocalRng(() => buildCbdTowerGeometry(1), 0xc7b10001);
+    const calls = r.mock.calls.length;
+    r.mockRestore();
+    expect(calls).toBe(0);
+  });
+});

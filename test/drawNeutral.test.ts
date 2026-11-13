@@ -12,7 +12,8 @@
 // parked cars multiplayer addresses BY INDEX.
 //
 // Island.seedMark() checkpoints the build at five builder boundaries: after
-// TextureGenerator.createBuildingTextures, after the construction loop, after
+// the CBD facade burn (C7 removed TextureGenerator.createBuildingTextures and
+// burns its 450 draws there), after the construction loop, after
 // the gate boards, before createRocks and at the end of the constructor. This
 // suite installs a recorder for those checkpoints and counts the seeded draws
 // taken at each one, for two builds:

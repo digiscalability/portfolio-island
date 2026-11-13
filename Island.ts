@@ -224,6 +224,114 @@ function buildClumpShielded(rng: () => number): {
   return { geometry, height: CLUMP_H };
 }
 
+/**
+ * The seeded draws TextureGenerator.createBuildingTextures took inside the
+ * seeded window (C7 removed it): 19 rows x 11 columns = 209 bricks, each 2
+ * Math.random, plus 4 CanvasTextures x 8 (each Texture's uuid and its
+ * Source's). Measured by drawNeutral (node) and the seed probe (Chromium).
+ */
+export const CBD_FACADE_DRAWS = 450;
+
+/** The CBD towers' palette (C7): one body tone per tower, a shared stone
+ *  base course, and a darker cornice and parapet. Pastels that sit under
+ *  the toon ramp beside the cottages, never a texture. */
+export const CBD_TONES = {
+  bodies: [0x9fb7cf, 0xb3c3b0, 0xa9b4cf, 0xc2b9a7] as readonly number[],
+  base: 0xe6d9bf,
+  trim: 0x5f7690,
+} as const;
+
+/**
+ * One CBD tower: a 3.0 x 5.2 x 3.0 body centred on the origin (as the box it
+ * replaces), two-tone by vertex colour (a stone base course under the body
+ * tone, a darker cornice band at the top) and a parapet rim standing 0.35 u
+ * above the roof. Indexed-free parts merged into one geometry, so the tower
+ * is still one mesh, one draw and one ink hull. Draws nothing itself, but it
+ * mints BufferGeometry uuids, so the caller builds it under withLocalRng.
+ */
+export function buildCbdTowerGeometry(index: number): THREE.BufferGeometry {
+  const W = 3.0;
+  const H = 5.2;
+  const BASE = 0.65; // base course: under the window planes (they start at -1.95)
+  const CORNICE = 0.3;
+  const PARAPET_H = 0.35;
+  const PARAPET_T = 0.2;
+  const body = CBD_TONES.bodies[index % CBD_TONES.bodies.length];
+  const part = (
+    w: number,
+    h: number,
+    d: number,
+    x: number,
+    y: number,
+    z: number,
+    colour: number,
+  ): THREE.BufferGeometry => {
+    const g = new THREE.BoxGeometry(w, h, d).toNonIndexed();
+    g.translate(x, y, z);
+    const c = new THREE.Color(colour);
+    const n = g.getAttribute('position').count;
+    const col = new Float32Array(n * 3);
+    for (let k = 0; k < n; k++) {
+      col[k * 3] = c.r;
+      col[k * 3 + 1] = c.g;
+      col[k * 3 + 2] = c.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  };
+  const bot = -H / 2;
+  const top = H / 2;
+  const mid = H - BASE - CORNICE;
+  const parts = [
+    // Base course: a hair proud of the body so the seam reads as a ledge.
+    part(W + 0.08, BASE, W + 0.08, 0, bot + BASE / 2, 0, CBD_TONES.base),
+    part(W, mid, W, 0, bot + BASE + mid / 2, 0, body),
+    part(W + 0.1, CORNICE, W + 0.1, 0, top - CORNICE / 2, 0, CBD_TONES.trim),
+    // Parapet: four walls around the roof edge.
+    part(
+      W + 0.1,
+      PARAPET_H,
+      PARAPET_T,
+      0,
+      top + PARAPET_H / 2,
+      (W + 0.1) / 2 - PARAPET_T / 2,
+      CBD_TONES.trim,
+    ),
+    part(
+      W + 0.1,
+      PARAPET_H,
+      PARAPET_T,
+      0,
+      top + PARAPET_H / 2,
+      -((W + 0.1) / 2 - PARAPET_T / 2),
+      CBD_TONES.trim,
+    ),
+    part(
+      PARAPET_T,
+      PARAPET_H,
+      W + 0.1 - 2 * PARAPET_T,
+      (W + 0.1) / 2 - PARAPET_T / 2,
+      top + PARAPET_H / 2,
+      0,
+      CBD_TONES.trim,
+    ),
+    part(
+      PARAPET_T,
+      PARAPET_H,
+      W + 0.1 - 2 * PARAPET_T,
+      -((W + 0.1) / 2 - PARAPET_T / 2),
+      top + PARAPET_H / 2,
+      0,
+      CBD_TONES.trim,
+    ),
+  ];
+  const merged = mergeGeometries(parts, false) as THREE.BufferGeometry;
+  for (const g of parts) g.dispose();
+  merged.computeBoundingBox();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
 export class Island {
   /** The island root GROUP (terrain, sea, props…). Not a Mesh — the terrain
    *  itself is `surfaceMesh`. Was mistyped as THREE.Mesh, which hid a crash in
@@ -2127,21 +2235,27 @@ export class Island {
 
     // Add a few low-poly buildings aligned to the surface (placeholders). We'll attempt to replace them with GLTF models if present.
     const buildings = new THREE.Group();
-    // generate procedural building textures and use them for PBR-like facades
-    const buildingTex = TextureGenerator.createBuildingTextures(512, 512);
+    // C7: the towers are painted in the island's own style (flat two-tone
+    // vertex colour under the toon ramp, ink hulls, a parapet), not the
+    // photo-ish brick facade the old TextureGenerator.createBuildingTextures
+    // drew on four 512x512 canvases (albedo, normal, AO, roughness: ~5.3 MiB
+    // of GPU memory and ~42 ms of canvas work at 4x CPU). That call took
+    // CBD_FACADE_DRAWS seeded draws (209 bricks x 2 Math.random + 4
+    // CanvasTextures x 8, measured by drawNeutral and the seed probe); they
+    // are burned here, before the checkpoint, so the stream after it is
+    // byte-identical.
+    burnDraws(CBD_FACADE_DRAWS);
     Island.seedMark('island:buildingTextures');
+    // The replacement material is built at the same site and takes the same
+    // 4 draws (one Material uuid) the PBR facade material took. WHITE colour:
+    // the vertex colours carry the two tones (white x colour, never a tint
+    // multiplied twice, the near-black-grass class of bug).
     const buildingMat = Materials.createPBRMaterial({
-      color: 0xffffff, // WHITE: the albedo map carries the slate facade color.
-      // 0xd9c6b3 here MULTIPLIED the same-toned brick map (the near-black-grass
-      // class of bug) — with the toon shadow ramp on top, tower faces crushed
-      // to a black void at noon.
-      map: buildingTex.albedo,
-      normalMap: buildingTex.normal,
-      roughnessMap: buildingTex.roughness,
-      aoMap: buildingTex.ao,
+      color: 0xffffff,
       roughness: 0.65,
       metalness: 0.02,
     });
+    buildingMat.vertexColors = true;
     const buildingPlaceholders: THREE.Mesh[] = [];
     const buildingSamples: { position: THREE.Vector3; normal: THREE.Vector3 }[] = [];
     // Emissive office-window grids for the CBD towers — they were unlit black
@@ -2183,8 +2297,12 @@ export class Island {
       const sampled = this.sampleSurfaceByDirection(dir, 0.0);
       buildingSamples.push({ position: sampled.position.clone(), normal: sampled.normal.clone() });
 
-      // Real office scale: ~2 storeys, clearly taller than the cottages
-      const bGeom = new THREE.BoxGeometry(3.0, 5.2, 3.0);
+      // Real office scale: ~2 storeys, clearly taller than the cottages.
+      // C7: the plain box this was (one BufferGeometry, 4 draws) is burned,
+      // and the two-tone tower with its parapet is built under a local RNG,
+      // so the seeded stream is unchanged. Same 3.0 x 5.2 x 3.0 body.
+      burnDraws(4);
+      const bGeom = withLocalRng(() => buildCbdTowerGeometry(i), 0xc7b10000 + i);
       const b = new THREE.Mesh(bGeom, buildingMat);
 
       // FIX: Building geometry is centered, so we need to offset it upward by half its height
