@@ -11,6 +11,7 @@
 //
 //   npm run probe -- p2/firstplay [--device desk|phone] --dist dist --port <n>
 //   npm run probe -- p2/race      [--driver gates|compass] [--circuit land|water] [--device desk|phone] --dist dist --port <n>
+//   npm run probe -- p2/race --legs | --circuit water --craft boat   (P2-E2d) --dist dist --port <n>
 //   npm run probe -- p2/quests    [--device desk|phone] --dist dist --port <n>
 const lib = require('../lib.cjs');
 const G = require('./guide-lib.cjs');
@@ -285,12 +286,12 @@ const RACE = () => {
   };
 };
 /** Board the craft nearest the circuit's start and put it 14 u before ring 0, heading through it. */
-const RACE_SETUP = ({ kind }) => {
+const RACE_SETUP = ({ kind, craft }) => {
   const sc = window.__app.scene;
   const c = sc.races && sc.races.circuits ? sc.races.circuits[kind] : null;
   if (!c || !c.dirs || c.dirs.length < 3) return { error: 'hook missing: scene.races.circuits' };
   const start = sc.getRaceStartPosition(kind);
-  const want = kind === 'land' ? ['car'] : ['jetski', 'boat'];
+  const want = craft ? [craft] : kind === 'land' ? ['car'] : ['jetski', 'boat'];
   let idx = -1;
   let best = Infinity;
   for (let i = 0; i < sc.vehicles.length; i++) {
@@ -314,6 +315,9 @@ const RACE_SETUP = ({ kind }) => {
   const f2 = a.clone().addScaledVector(back, -a.dot(back)).normalize();
   sc.boardVehicle(idx);
   if (!sc.isRidingVehicle()) return { error: 'boardVehicle did not board' };
+  window.__race = { kind, idx };
+  // --craft: start from where that craft is parked, as a visitor would.
+  if (craft) return { idx, craft: sc.vehicleKind(idx), craftToStartU: +best.toFixed(1), rings: c.dirs.length, parked: true };
   v.dir.copy(back);
   v.forward.copy(f2);
   if (kind === 'land') {
@@ -358,6 +362,97 @@ const RACE_STEER = ({ driver }) => {
   const camToRing = cam.clone().normalize().angleTo(next) * R;
   return { rel, dist: +dist.toFixed(1), state: r.state, nextIdx: r.nextIdx, belowHorizon: camToRing > horizon, camToRingU: +camToRing.toFixed(1), horizonU: +horizon.toFixed(1), riding: sc.isRidingVehicle() };
 };
+
+/**
+ * --legs: every consecutive ring spacing on both circuits (ring i to i+1, and
+ * the last back to the finish, ring 0), great-circle u, against the chase
+ * camera's own horizon on foot: sqrt(2 R h), h its height over the player's
+ * feet (the audit's 1.37 u).
+ */
+const RACE_LEGS = () => {
+  const sc = window.__app.scene;
+  const isl = sc.getIsland();
+  const R = isl.getRadius();
+  const cam = sc.getCamera().position;
+  const pl = sc.getPlayer().getWorldPosition();
+  // The audit's horizon: the camera's height over the player's feet (1.37 u).
+  const hCam = cam.length() - pl.length();
+  const horizon = Math.sqrt(2 * R * Math.max(0.05, hCam));
+  const out = { R: +R.toFixed(1), camAbovePlayerU: +hCam.toFixed(2), camAboveGroundU: +(cam.length() - isl.analyticSurface(cam.clone().normalize()).radius).toFixed(2), horizonU: +horizon.toFixed(1), circuits: {} };
+  for (const kind of ['land', 'water']) {
+    const c = sc.races && sc.races.circuits ? sc.races.circuits[kind] : null;
+    if (!c || !c.dirs) continue;
+    const d = c.dirs.map((x) => x.clone().normalize());
+    const legs = d.map((a, i) => +(a.angleTo(d[(i + 1) % d.length]) * R).toFixed(1));
+    out.circuits[kind] = { rings: d.length, legs, meanU: +(legs.reduce((s, x) => s + x, 0) / legs.length).toFixed(1), maxU: Math.max(...legs), overHorizon: legs.filter((x) => x > horizon).length };
+  }
+  return out;
+};
+/**
+ * The boat against the shore. A craft's step onto land is refused
+ * (GameScene keeps craft on the sea), so a beaching reads as: the bow (1.5 u
+ * ahead along its forward) over land and the hull not moving between polls.
+ */
+const BOAT = () => {
+  const sc = window.__app.scene;
+  const g = window.__race;
+  const v = sc.vehicles[g.idx];
+  const r = sc.races;
+  const isl = sc.getIsland();
+  const R = isl.getRadius();
+  const up = v.dir.clone().normalize();
+  const f = v.forward.clone().addScaledVector(up, -v.forward.dot(up)).normalize();
+  const bow = up.clone().multiplyScalar(Math.cos(1.5 / R)).addScaledVector(f, Math.sin(1.5 / R)).normalize();
+  const prev = g.prevDir || up.clone();
+  const movedU = prev.angleTo(up) * R;
+  g.prevDir = up.clone();
+  return { bowOnLand: !isl.isOverWater(bow), movedU: +movedU.toFixed(3), state: r.state, nextIdx: r.nextIdx, riding: sc.isRidingVehicle() };
+};
+/** --craft boat: the gates driver from the parked boat for ms (backing out after 4 s aground); beachings and checkpoints passed. */
+async function driveBoat(page, ms) {
+  let held = new Set();
+  const set = async (keys) => {
+    for (const k of [...held]) if (!keys.has(k)) await page.keyboard.up(k);
+    for (const k of keys) await page.keyboard.down(k);
+    held = keys;
+  };
+  let beachings = 0;
+  let free = 4;
+  let stuckMs = 0;
+  let lastIdx = null;
+  let passed = 0;
+  let started = false;
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const s = await page.evaluate(RACE_STEER, { driver: 'gates' }).catch(() => null);
+    const b = await page.evaluate(BOAT).catch(() => null);
+    if (!s || !b || !b.riding) break;
+    // A beaching: the throttle held, the bow on land and the hull stopped.
+    // A new beaching only after 0.5 s afloat and moving (4 polls), so one
+    // grounding the steer rocks against counts once.
+    const beached = held.has('w') && b.bowOnLand && b.movedU < 0.05;
+    if (beached && free >= 4) beachings++;
+    free = beached ? 0 : free + 1;
+    // Stuck 4 s: back out and try again, as driveLap's driver does.
+    stuckMs = beached ? stuckMs + 120 : 0;
+    if (stuckMs > 4000) {
+      stuckMs = 0;
+      await set(new Set(['s']));
+      await lib.sleep(900);
+      continue;
+    }
+    if (b.state === 'running') {
+      if (!started) started = true;
+      else if (b.nextIdx !== lastIdx) passed++;
+      lastIdx = b.nextIdx;
+    }
+    if (s.rel === null || Math.abs(s.rel) < 10) await set(new Set(['w']));
+    else await set(new Set(['w', s.rel > 0 ? 'd' : 'a']));
+    await lib.sleep(120);
+  }
+  await set(new Set());
+  return { beachings, checkpointsPassed: passed, started, ms: Date.now() - t0 };
+}
 
 async function driveLap(page, driver, maxMs) {
   let held = new Set();
@@ -430,7 +525,50 @@ const FINISH = () => {
   return { panel: window.__app.ui.panels.current(), text: text.slice(0, 500), namePrompt: !!nameInput, selfName: mp && mp.selfName ? mp.selfName : null, storedName: localStorage.getItem('ds_player_name'), buttons: [...document.querySelectorAll('#ui-overlay button')].filter((b) => b.getBoundingClientRect().width > 2).map((b) => (b.textContent || '').replace(/\s+/g, ' ').trim()).filter((x) => /retry|board|leaderboard/i.test(x)) };
 };
 
+async function raceLegs(t) {
+  for (const prof of t.profiles(['desktop'])) {
+    const s = await t.session(prof);
+    const { page } = s;
+    await t.boot(s, { query: 'hour=12' });
+    await lib.sleep(1000);
+    await explore(page, false);
+    await skipGuide(page);
+    await lib.sleep(1500);
+    const legs = await page.evaluate(RACE_LEGS);
+    await s.close();
+    t.data[prof] = { legs };
+    for (const kind of ['land', 'water']) {
+      const c = legs.circuits[kind];
+      t.check(`${prof}: ${kind} circuit ring spacing against the chase-camera horizon (reported)`, c ? true : null, c ? { rings: c.rings, meanU: c.meanU, maxU: c.maxU, legs: c.legs, overHorizon: `${c.overHorizon} of ${c.legs.length}`, horizonU: legs.horizonU } : null, `reported (58c8849: ${kind === 'land' ? '115.5' : '103.9'} u, horizon 16.5 u)`);
+    }
+  }
+}
+
+async function raceBoat(t) {
+  for (const prof of t.profiles(['desktop'])) {
+    const s = await t.session(prof, { init: [P.SAMPLER], skipName: false });
+    const { page } = s;
+    await t.boot(s, { query: 'hour=12' });
+    await lib.sleep(1000);
+    await explore(page, false);
+    await skipGuide(page);
+    await lib.sleep(1500);
+    const setup = await page.evaluate(RACE_SETUP, { kind: 'water', craft: 'boat' });
+    if (setup.error) throw new Error(setup.error);
+    await lib.sleep(1200);
+    await t.shot(page, `race-${prof}-boat-start.png`);
+    const run = await driveBoat(page, 49000);
+    await t.shot(page, `race-${prof}-boat-end.png`);
+    await s.close();
+    t.data[prof] = { setup, run };
+    t.check(`${prof}: from the parked boat, checkpoints passed in 49 s (GP-03)`, run.checkpointsPassed >= 5, { passed: run.checkpointsPassed, started: run.started, craftToStartU: setup.craftToStartU }, '5 of 5 (58c8849: 0 of 5)');
+    t.check(`${prof}: beachings with the throttle held`, run.beachings === 0, run.beachings, '0 (58c8849: 9)');
+  }
+}
+
 async function race(t) {
+  if (t.args.legs) return raceLegs(t);
+  if (t.args.craft === 'boat') return raceBoat(t);
   const driver = t.args.driver === 'compass' ? 'compass' : 'gates';
   const kind = t.args.circuit === 'water' ? 'water' : 'land';
   const all = [];
@@ -622,7 +760,7 @@ async function quests(t) {
 
 module.exports = {
   firstplay: { item: 'P2-E2b (GP-02, GP-08; P2-D4)', title: "the first play: the trail, its villager, and five questions with the backend blocked (the reply, its button, where the button leads, the badge)", profiles: ['desktop', 'phone'], run: firstplay },
-  race: { item: 'P2-E2b (GP-03, GP-05; P2-A7, D10)', title: "a lap by the gates' positions (or --driver compass: by the compass pill alone): the next ring against the horizon, the HUD over the pill, district toasts, the finish modal, the name prompt", profiles: ['desktop', 'phone'], run: race },
+  race: { item: 'P2-E2b (GP-03, GP-05; P2-A7, D10)', title: "a lap by the gates' positions (or --driver compass: by the compass pill alone): the next ring against the horizon, the HUD over the pill, district toasts, the finish modal, the name prompt. --legs: every ring spacing on both circuits against the horizon; --circuit water --craft boat: from the parked boat, beachings and checkpoints in 49 s (P2-E2d)", profiles: ['desktop', 'phone'], run: race },
   quests: { item: 'P2-E2b (GP-04, GP-07, GP-10; P2-A7); P2-E2c canteen', title: "six presses at the School, the canteen double press (coins and soups), the Elder Sage's prompt and what E does after her quest, the parcel prompt", profiles: ['desktop'], run: quests },
   // Helpers for the top-level npc.cjs (functions, not probes: run.cjs registers only {run}).
   openChat,
