@@ -5941,6 +5941,18 @@ export class SimpleUI {
     // so with a camera finger already down the joystick read the WRONG
     // finger and movement lurched. Track the pad's own finger by identifier.
     let joyTouchId: number | null = null;
+    // The MOVE caption goes at the stick's first engage (|deflection| >= 12%),
+    // so a tap that never moves the stick leaves it up.
+    const dismissMoveCaption = () => {
+      if (!caption) return;
+      caption.remove();
+      caption = null;
+      try {
+        localStorage.setItem('ds_move_seen', '1');
+      } catch {
+        /* storage blocked: the caption simply returns next visit */
+      }
+    };
     const applyJoyTouch = (t: Touch) => {
       const dx = t.clientX - originX;
       const dy = t.clientY - originY;
@@ -5955,8 +5967,10 @@ export class SimpleUI {
         ty = (ty / tl) * MAX;
       }
       moveThumb(tx, ty);
-      if (!engaged && mag >= ENGAGE) engaged = true;
-      else if (engaged && mag < RELEASE) engaged = false;
+      if (!engaged && mag >= ENGAGE) {
+        engaged = true;
+        dismissMoveCaption();
+      } else if (engaged && mag < RELEASE) engaged = false;
       const out = engaged ? (mag - RELEASE) / (1 - RELEASE) : 0;
       if (out > 0 && len > 0) {
         this.joyState.strafe = (dx / len) * out;
@@ -5997,15 +6011,6 @@ export class SimpleUI {
         ringCx = r.left + cx;
         ringCy = r.top + cy;
         hapticPulse(10); // first-engage tick
-        if (caption) {
-          caption.remove();
-          caption = null;
-          try {
-            localStorage.setItem('ds_move_seen', '1');
-          } catch {
-            /* storage blocked: the caption simply returns next visit */
-          }
-        }
         applyJoyTouch(t);
       },
       { passive: false },

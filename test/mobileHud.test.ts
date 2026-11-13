@@ -441,7 +441,14 @@ describe('D15: the joystick lands under the thumb', () => {
     boot();
     const { ring, hit } = parts();
     expect(ring.querySelector('.ds-caption')?.textContent).toBe('Move');
+    // A tap that never engages the stick leaves the caption up.
     touch(hit, 'touchstart', 80, 80);
+    touch(hit, 'touchend', 80, 80);
+    expect(ring.querySelector('.ds-caption')?.textContent).toBe('Move');
+    expect(localStorage.getItem('ds_move_seen')).toBeNull();
+    // The first engage (>= 12% deflection) removes it for good.
+    touch(hit, 'touchstart', 80, 80);
+    touch(hit, 'touchmove', 80, 60);
     expect(ring.querySelector('.ds-caption')).toBeNull();
     expect(localStorage.getItem('ds_move_seen')).toBe('1');
     ui?.dispose();
