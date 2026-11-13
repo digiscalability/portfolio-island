@@ -14,7 +14,16 @@ THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-import { addFleetHull, addGroupHulls, addSkinnedHull, applyCelRim, STATIC_INK } from './CelLook';
+import {
+  addFleetHull,
+  addGroupHulls,
+  addSkinnedHull,
+  applyCanopySway,
+  applyCelRim,
+  bakeCanopyWeights,
+  setCanopyTimeSource,
+  STATIC_INK,
+} from './CelLook';
 import {
   DISTRICTS,
   RING_DISTRICT_LONS,
@@ -557,6 +566,8 @@ export class Island {
   constructor(radius: number = 18) {
     this.radius = radius;
     this.center = new THREE.Vector3(0, 0, 0);
+    // C9: the canopy sway runs on the grass clock GameScene advances.
+    setCanopyTimeSource(this.grassTimeUniform);
     this.mesh = this.createIsland();
     // debug flag (enable via window.__ISLAND_DEBUG = true in console)
     if (typeof window !== 'undefined') {
@@ -2560,6 +2571,9 @@ export class Island {
     const PINE_COLOR = 0x2a6e2a;
     const FOLIAGE_COLORS = [0x7ba84e, 0x5aa244, 0x4a9e3e, 0x3a8c3a, 0x2d7a3a]; // ordered dry→lush; canopy indexes this by moisture
     const treeMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78 });
+    // C9: the crowns breathe in the vertex shader (aCanopy weights below);
+    // the shader hook and its uniforms allocate no three object.
+    applyCanopySway(treeMat);
 
     // Bake a part's local transform + a flat vertex colour into its geometry,
     // ready to merge into the tree's single mesh.
@@ -2592,6 +2606,14 @@ export class Island {
         col[k * 3 + 2] = _tc.b;
       }
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      // C9: canopy flag per vertex (trunks 0, every crown part 1); the merged
+      // tree turns it into (h/H)^2 weights. Every part carries it, so the
+      // attribute sets still match for the merge.
+      const trunk = colorHex === TRUNK_COLOR || colorHex === DARK_TRUNK_COLOR;
+      geo.setAttribute(
+        'aCanopy',
+        new THREE.BufferAttribute(new Float32Array(n).fill(trunk ? 0 : 1), 1),
+      );
       // Drop uv so every part shares an identical attribute set for the merge
       geo.deleteAttribute('uv');
       parts.push(geo);
@@ -2746,7 +2768,9 @@ export class Island {
       }
 
       // Merge the tree's parts into one vertex-coloured mesh → one draw call
-      const treeMesh = new THREE.Mesh(mergeGeometries(parts, false), treeMat);
+      const treeGeo = mergeGeometries(parts, false);
+      bakeCanopyWeights(treeGeo, treeGeo.getAttribute('aCanopy').array as Float32Array);
+      const treeMesh = new THREE.Mesh(treeGeo, treeMat);
       treeMesh.castShadow = true;
       treeGroup.add(treeMesh);
 

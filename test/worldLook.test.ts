@@ -2265,3 +2265,21 @@ describe('C11: the ChocoMate thumbnail has no scrollbar strip', () => {
     expect(buf.length).toBeLessThanOrEqual(18 * 1024);
   });
 });
+
+describe('C9: the island trees carry canopy weights and the sway chunk', () => {
+  test('trunks flag 0, crowns 1, the merged tree is weighted, and the clock is the grass clock', () => {
+    const src = stripped('Island.ts');
+    expect(src).toContain('applyCanopySway(treeMat);');
+    expect(src).toContain('setCanopyTimeSource(this.grassTimeUniform);');
+    expect(src).toContain(
+      'const trunk = colorHex === TRUNK_COLOR || colorHex === DARK_TRUNK_COLOR;',
+    );
+    expect(src).toMatch(
+      /const treeGeo = mergeGeometries\(parts, false\);\s*bakeCanopyWeights\(treeGeo, treeGeo\.getAttribute\('aCanopy'\)\.array as Float32Array\);/,
+    );
+    // The per-effect switch, by the exact name E's ledger reads.
+    expect(stripped('CelLook.ts')).toContain(
+      "fx.register('canopySway', { desktop: true, low: true });",
+    );
+  });
+});
