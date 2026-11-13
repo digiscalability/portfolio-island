@@ -591,10 +591,15 @@ describe('the hire card names the work, and Projects opens at it (P2-D5)', () =>
   // and the keyframes it ran.
   let rung: HTMLElement[] = [];
   let frames: Keyframe[][] = [];
+  // D11's panel ramps (two keyframes: opacity, or a lift) also call
+  // Element.animate; only the anchor ring's three-step pulse counts here.
+  const isRing = (keyframes: Keyframe[]): boolean => keyframes.length === 3;
   const animate = vi.fn(function (this: HTMLElement, keyframes: Keyframe[]) {
+    if (!isRing(keyframes)) return;
     rung.push(this.parentElement as HTMLElement);
     frames.push(keyframes);
   });
+  const ringCalls = (): number => animate.mock.calls.filter(([k]) => isRing(k)).length;
 
   beforeEach(() => {
     window.__analyticsLog = [];
@@ -672,7 +677,7 @@ describe('the hire card names the work, and Projects opens at it (P2-D5)', () =>
       'insta',
     ]);
     for (const c of cards) expect(c.querySelector('h3'), c.dataset.project).toBeTruthy();
-    expect(animate).not.toHaveBeenCalled(); // no anchor, no ring
+    expect(ringCalls()).toBe(0); // no anchor, no ring
   });
 
   test.each(['island', 'rankpilot', 'digiscalability'])(
@@ -713,7 +718,7 @@ describe('the hire card names the work, and Projects opens at it (P2-D5)', () =>
     layout('rankpilot');
     ui.showHireCard('cta');
     panel().querySelector<HTMLButtonElement>('button[data-open-project="rankpilot"]')!.click();
-    expect(animate).not.toHaveBeenCalled();
+    expect(ringCalls()).toBe(0);
     expect(panel().scrollTop).toBe(532);
     await Promise.resolve();
     expect(document.activeElement).toBe(panel().querySelector('[data-project="rankpilot"] h3'));
@@ -743,7 +748,7 @@ describe('the hire card names the work, and Projects opens at it (P2-D5)', () =>
       await Promise.resolve();
       expect(document.activeElement, anchor).toBe(panel().querySelector('h2'));
     }
-    expect(animate).not.toHaveBeenCalled();
+    expect(ringCalls()).toBe(0);
   });
 
   test('Send a message opens Contact at its form: focus on its heading, never a field', async () => {

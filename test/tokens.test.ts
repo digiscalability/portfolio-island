@@ -57,7 +57,10 @@ describe('ui/tokens.ts and style.css agree', () => {
 
   test('and style.css declares no --ds-* property the tokens do not have', () => {
     const names = new Set((Object.keys(DS) as DsToken[]).map(cssVarName));
-    expect([...declared.keys()].filter((n) => !names.has(n))).toEqual([]);
+    // The motion tokens (--ds-dur-*, --ds-ease-*) are ui/motion.ts's, kept in
+    // step by motionRules.test.
+    const motion = /^--ds-(dur|ease)-/;
+    expect([...declared.keys()].filter((n) => !names.has(n) && !motion.test(n))).toEqual([]);
   });
 
   test('they live on :root, beside (not inside) the legacy --primary block', () => {

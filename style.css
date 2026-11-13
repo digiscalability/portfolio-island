@@ -63,6 +63,16 @@
   --ds-hit-target: 44px;
   --ds-type-floor: 12px;
   --ds-type-caption: 11px;
+  /* Motion (D11): ui/motion.ts's MOTION, mirrored; motionRules.test keeps
+     the two in step. */
+  --ds-dur-xs: 90ms;
+  --ds-dur-s: 140ms;
+  --ds-dur-m: 200ms;
+  --ds-dur-l: 240ms;
+  --ds-dur-xl: 450ms;
+  --ds-ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ds-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ds-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 /* Screen-reader only helper (used for live regions and visually-hidden content) */
@@ -350,16 +360,20 @@ body {
    the OS preference (media query) and the in-app ♿ toggle, which
    Accessibility.ts mirrors onto <html> as .reduced-motion — a media query
    cannot see the app toggle, and JS-written inline animations cannot be
-   reached any other way. Keep the two blocks identical. */
+   reached any other way. Keep the two blocks identical.
+   D11: not 'transition: none' any more. Nothing moves, but opacity and
+   colour still ramp over 120 ms, so a panel arrives instead of popping. */
 @media (prefers-reduced-motion: reduce) {
   * {
-    transition: none !important;
+    transition-property: opacity, color, background-color, border-color !important;
+    transition-duration: 120ms !important;
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
   }
 }
 html.reduced-motion * {
-  transition: none !important;
+  transition-property: opacity, color, background-color, border-color !important;
+  transition-duration: 120ms !important;
   animation-duration: 0.001ms !important;
   animation-iteration-count: 1 !important;
 }
@@ -1193,6 +1207,17 @@ html.reduced-motion #ld-orbit {
 }
 .hud-btn:hover {
   filter: brightness(1.18);
+}
+/* D11: a press gives (the scale property composes with any inline
+   transform, such as the coin chip's pop). */
+.hud-btn:active {
+  scale: 0.96;
+}
+/* D11: the HUD waits out the intro fly-in ('ds:intro' start), then
+   PanelManager.releaseHud staggers it in. */
+.ds-intro-hold {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 /* The Controls & settings sheet (D8). Its keycaps take over the styling of
    index.html's old #controls-guide block, which nothing had used since the

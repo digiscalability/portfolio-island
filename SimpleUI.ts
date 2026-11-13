@@ -2239,6 +2239,7 @@ export class SimpleUI {
     if (typeof window === 'undefined') return;
     window.addEventListener('ds:guide', this.onGuideEvent);
     window.addEventListener('ds:intro', this.onIntroEvent);
+    window.addEventListener('ds:coin', this.onCoinEvent);
     // The ladder and the visit's numbers (P2-D10), kept from boot: main-simple
     // publishes in the same task as it opens the crown's card.
     window.addEventListener('ds:goals', this.onGoalsEvent);
@@ -2274,8 +2275,13 @@ export class SimpleUI {
     if (phase === 'start' && this.introPhase === 'none') {
       this.introPhase = 'started';
       this.introStartedAt = Date.now();
+      // D11: the HUD waits out the intro and staggers in once it settles,
+      // or after 6 s if 'settled' never comes. No 'start', no hide.
+      this.panels.holdHud();
+      window.setTimeout(() => this.panels.releaseHud(), 6000);
     } else if (phase === 'settled') {
       this.introPhase = 'settled';
+      this.panels.releaseHud();
       // A tick later: afterIntro opens the welcome card right after it says
       // settled, and the card must win that race.
       this.schedulePump(0);
@@ -8208,6 +8214,7 @@ export class SimpleUI {
         pointerEvents: 'auto', // tap the chip to open the coin receipt
         cursor: 'pointer',
         transition: 'transform 0.12s ease',
+        fontVariantNumeric: 'tabular-nums', // D11: digits keep one width
       });
       this.coinDiv.title = 'Coin history';
       this.coinDiv.addEventListener('click', () => this.onCoinChipClick?.());
@@ -8228,6 +8235,12 @@ export class SimpleUI {
     }
     const from = this._coinShown;
     const delta = total - from;
+    // D11: a coin in flight (ds:coin) lands first; the chip counts when it
+    // arrives. A's pays (no ds:coin) pop through the delta at once.
+    if (this.coinFlights > 0 && delta > 0) {
+      this.coinPending = total;
+      return;
+    }
     // Reduced motion: no count-up, no pop — just the value.
     if (a11y.reducedMotion || delta === 0) {
       SimpleUI.chipText(this.coinDiv, String(total));
@@ -8235,10 +8248,16 @@ export class SimpleUI {
       return;
     }
     const el = this.coinDiv;
-    // Amount-aware pop: bigger change → bigger pop (capped). Green flash on a
-    // gain, coral on a spend — earning and spending now read differently.
-    const mag = Math.min(Math.abs(delta), 50);
-    const scale = 1.15 + (mag / 50) * 0.4; // 1.15 .. 1.55
+    // Amount-aware pop (D11): 1.12 + 0.13 x min(1, |delta|/50), at most 1.25.
+    // Green flash on a gain, coral on a spend.
+    // The chip keeps one width through the count (tabular digits; the wider
+    // of the two ends).
+    el.style.minWidth = '';
+    const w0 = el.offsetWidth;
+    SimpleUI.chipText(el, String(total));
+    el.style.minWidth = `${Math.max(w0, el.offsetWidth)}px`;
+    SimpleUI.chipText(el, String(from));
+    const scale = Math.min(1.25, 1.12 + 0.13 * Math.min(1, Math.abs(delta) / 50));
     el.style.transform = `scale(${scale.toFixed(2)})`;
     el.style.color = delta > 0 ? '#7fe08a' : '#ff9a7a';
     window.setTimeout(() => {
@@ -8260,10 +8279,73 @@ export class SimpleUI {
         SimpleUI.chipText(el, String(total));
         this._coinShown = total;
         this._coinAnim = 0;
+        el.style.minWidth = '';
       }
     };
     this._coinAnim = requestAnimationFrame(step);
   }
+
+  /** Coins in the air (D11) and the total waiting for them to land. */
+  private coinFlights = 0;
+  private coinPending: number | null = null;
+
+  /**
+   * D11 (contract with B9): 'ds:coin' {x, y, value} fires as a meadow or
+   * trail coin is collected, before the total updates. A 22 px coin flies
+   * from the pickup to the chip over 420 ms, then the chip counts and pops.
+   * Reduced motion, or no visible chip: no flight, the chip counts in place.
+   */
+  private readonly onCoinEvent = (e: Event): void => {
+    const d = (e as CustomEvent<{ x?: number; y?: number }>).detail;
+    const chip = this.coinDiv;
+    if (!chip || a11y.reducedMotion || !d || !Number.isFinite(d.x) || !Number.isFinite(d.y)) return;
+    const r = chip.getBoundingClientRect();
+    if (r.width < 1 || getComputedStyle(chip).visibility === 'hidden') return;
+    const coin = document.createElement('div');
+    coin.dataset.coinFlight = '1';
+    coin.setAttribute('aria-hidden', 'true');
+    Object.assign(coin.style, {
+      position: 'fixed',
+      left: `${d.x! - 11}px`,
+      top: `${d.y! - 11}px`,
+      width: '22px',
+      height: '22px',
+      borderRadius: '50%',
+      background: 'radial-gradient(circle at 35% 30%, #fff3b0, #ffd34a 45%, #c99a1c)',
+      boxShadow: '0 0 0 2px #8a6a10 inset, 0 2px 6px rgba(0,0,0,0.35)',
+      pointerEvents: 'none',
+      zIndex: '1700',
+    });
+    this.overlay.appendChild(coin);
+    this.coinFlights++;
+    let landed = false;
+    const land = (): void => {
+      if (landed) return;
+      landed = true;
+      coin.remove();
+      this.coinFlights = Math.max(0, this.coinFlights - 1);
+      if (this.coinFlights === 0 && this.coinPending !== null) {
+        const t = this.coinPending;
+        this.coinPending = null;
+        this.updateCoinCounter(t);
+      }
+    };
+    const dx = r.left + r.width / 2 - d.x!;
+    const dy = r.top + r.height / 2 - d.y!;
+    // It lands when the flight finishes (its last frame sits on the chip);
+    // the timer is the fallback for a browser without Web Animations.
+    if (typeof coin.animate === 'function') {
+      coin.animate(
+        [
+          { transform: 'translate(0, 0) scale(1)' },
+          { transform: `translate(${dx * 0.35}px, ${dy * 0.35 - 40}px) scale(1.1)`, offset: 0.4 },
+          { transform: `translate(${dx}px, ${dy}px) scale(0.7)` },
+        ],
+        { duration: 420, easing: 'ease-in-out', fill: 'forwards' },
+      ).onfinish = () => requestAnimationFrame(land);
+    }
+    window.setTimeout(land, 600);
+  };
 
   private feedDiv: HTMLElement | null = null;
 
@@ -11239,6 +11321,7 @@ export class SimpleUI {
     this.stopMessages();
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
+    window.removeEventListener('ds:coin', this.onCoinEvent);
     window.removeEventListener('ds:goals', this.onGoalsEvent);
     window.removeEventListener('keydown', this.onControlsKey);
     document.removeEventListener('keydown', this.onInputKey, true);
