@@ -1633,12 +1633,15 @@ function modeRejudge(args) {
  *   chunk is fetched before the card); the gating half of the check. The
  *   budget stays anchored at budgetBase (wave-1 main), so rebasing main
  *   does not hand the budget back: wave 2 used +21.97 kB of it.
- * - lazyCandidate: the largest whole module in the chunk that nothing needs
- *   before the welcome card, measured on ux/w2-perf-gate by minifying each
- *   module of the chunk on its own (esbuild, then gzip). GameScene.ts,
- *   SimpleUI.ts, Island.ts and main-simple.ts are 69% of the chunk and are
- *   not candidates as whole files. A moves it in wave 3 (amendments, A).
- * - nextCandidate: the one the report names for wave 4.
+ * - beforeCard: modules the world needs before the welcome card, so never
+ *   lazy-load candidates as whole files. GameScene.ts, SimpleUI.ts, Island.ts
+ *   and main-simple.ts are 69% of the chunk; the rest build the player, the
+ *   renderer and cel look, camera, sky, input, HUD registry, NPC walks and
+ *   the First steps card.
+ *   The candidates themselves are measured per run (lazyCandidates), not
+ *   pinned here: wave 4 pinned Multiplayer.ts and Chat.ts after both were
+ *   already their own chunks, so the report named a module with nothing left
+ *   to move.
  */
 const BUNDLE = {
   warnKB: 1000,
@@ -1648,19 +1651,22 @@ const BUNDLE = {
   beforeWave1: { rawKB: 930.89, gzipKB: 288.04, at: 'main before wave 1 (d5e0e96)' },
   gzipBudgetKB: 50,
   budgetBase: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
-  nextCandidate: {
-    module: 'Chat.ts',
-    minKB: 7.0,
-    gzipKB: 2.77,
-    how: "wave-4 contract: D's SimpleUI.ts drops the VOICE_MAX_MS value import (a local constant pinned to Chat.ts by a test), then A dynamic-imports Chat in main-simple.ts as its last, droppable commit",
-  },
-  lazyCandidate: {
-    module: 'Multiplayer.ts',
-    minKB: 14.07,
-    gzipKB: 5.17,
-    owners: 'A imports it (main-simple.ts), B owns the file',
-    how: "main-simple.ts builds it after the world, so a dynamic import() there moves it out; Chat.ts (7.0 kB, 2.77 gzip) can follow once SimpleUI.ts stops importing Chat's VOICE_MAX_MS",
-  },
+  beforeCard: [
+    'main-simple.ts',
+    'GameScene.ts',
+    'SimpleUI.ts',
+    'Island.ts',
+    'SimplePlayer.ts',
+    'SimpleRenderer.ts',
+    'CelLook.ts',
+    'OrbitCamera.ts',
+    'EnvironmentCycle.ts',
+    'SimpleInputManager.ts',
+    'PanelManager.ts',
+    'Guide.ts',
+    'GuideCard.ts',
+    'NpcActivities.ts',
+  ],
 };
 const kB = (bytes) => round(bytes / 1000, 2);
 /** A dist's main chunk: { file, rawKB, gzipKB }, or null when the dist has none (a --base run). */
@@ -1688,6 +1694,104 @@ function bundleCheck(size, base = BUNDLE.main) {
   const budgetUsedKB = round(size.gzipKB - BUNDLE.budgetBase.gzipKB, 2);
   const overWarningKB = round(size.rawKB - BUNDLE.warnKB, 2);
   return { ...size, base, deltaRawKB, deltaGzipKB, budgetUsedKB, overWarning: overWarningKB > 0, overWarningKB, pass: budgetUsedKB <= BUNDLE.gzipBudgetKB };
+}
+
+/**
+ * The modules a dist already splits off: every chunk in assets/ named after
+ * a module ('Multiplayer-<hash>.js' is Multiplayer), less the entry and the
+ * manualChunks vendors. A Set of base names, empty when there is no dist.
+ */
+function splitChunks(dist) {
+  const out = new Set();
+  try {
+    for (const f of fs.readdirSync(path.join(dist, 'assets'))) {
+      const m = /^(.+)-[\w-]{8}\.js$/.exec(f);
+      if (m && !['main', 'index', 'three', 'firebase', 'postprocessing'].includes(m[1])) out.add(m[1]);
+    }
+  } catch (e) {}
+  return out;
+}
+/** The source tree a dist was built from: its parent when that holds index.html, else this checkout. */
+function srcRootOf(dist) {
+  const up = dist ? path.dirname(path.resolve(dist)) : null;
+  return up && fs.existsSync(path.join(up, 'index.html')) ? up : path.resolve(__dirname, '..');
+}
+/**
+ * The eager modules of a source tree: every repo module in the entry's output
+ * or in a chunk the entry imports statically, measured as esbuild minifies it
+ * in a split bundle (packages stay external). A module only reached through
+ * import() is not eager. Rows are { module, minBytes, importers }, the
+ * importers being the eager modules that import it statically.
+ */
+function eagerModules(root) {
+  const esbuild = require(require.resolve('esbuild', { paths: [root, __dirname] }));
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const entry = (/<script[^>]*type="module"[^>]*src="\/?([^"]+)"/.exec(html) || [])[1];
+  if (!entry) throw new Error('no module script in index.html');
+  const r = esbuild.buildSync({
+    absWorkingDir: root,
+    entryPoints: [entry],
+    bundle: true,
+    splitting: true,
+    format: 'esm',
+    minify: true,
+    write: false,
+    metafile: true,
+    outdir: 'out',
+    packages: 'external',
+    logLevel: 'silent',
+    loader: { '.css': 'empty', '.svg': 'empty', '.png': 'empty', '.jpg': 'empty', '.webp': 'empty', '.glsl': 'text' },
+    define: { 'import.meta.env': '{}' },
+  });
+  const { inputs, outputs } = r.metafile;
+  const entryOut = Object.keys(outputs).find((k) => outputs[k].entryPoint === entry);
+  const eagerOuts = new Set();
+  const walk = (k) => {
+    if (!k || eagerOuts.has(k)) return;
+    eagerOuts.add(k);
+    for (const im of outputs[k].imports || []) if (im.kind === 'import-statement' && outputs[im.path]) walk(im.path);
+  };
+  walk(entryOut);
+  const bytes = {};
+  for (const k of eagerOuts) for (const [f, i] of Object.entries(outputs[k].inputs)) bytes[f] = (bytes[f] || 0) + i.bytesInOutput;
+  const importers = {};
+  for (const f of Object.keys(bytes)) for (const im of (inputs[f] && inputs[f].imports) || []) if (im.kind === 'import-statement' && im.path in bytes) (importers[im.path] = importers[im.path] || []).push(f);
+  return Object.entries(bytes)
+    .filter(([f]) => !f.includes('node_modules'))
+    .map(([module, minBytes]) => ({ module, minBytes, importers: (importers[module] || []).sort() }))
+    .sort((a, b) => b.minBytes - a.minBytes);
+}
+/**
+ * The next lazy-load candidates: the largest eager modules that the dist does
+ * not already split off and the world does not need before the card
+ * (BUNDLE.beforeCard), each minified on its own (esbuild) and gzipped as the
+ * wave-2 measurement did. { candidates: [{ module, minKB, gzipKB, importers }], split, error }.
+ */
+function lazyCandidates(root, dist, n = 2) {
+  const split = [...splitChunks(dist)].sort();
+  try {
+    const esbuild = require(require.resolve('esbuild', { paths: [root, __dirname] }));
+    const skip = new Set(BUNDLE.beforeCard);
+    const rows = eagerModules(root).filter((r) => !skip.has(r.module) && !split.includes(path.basename(r.module).replace(/\.[cm]?[jt]s$/, '')));
+    const candidates = rows.slice(0, n).map((r) => {
+      const src = fs.readFileSync(path.join(root, r.module), 'utf8');
+      const min = esbuild.transformSync(src, { loader: /\.[cm]?js$/.test(r.module) ? 'js' : 'ts', minify: true, format: 'esm' }).code;
+      return { module: r.module, minKB: kB(Buffer.byteLength(min)), gzipKB: kB(zlib.gzipSync(min).length), importers: r.importers };
+    });
+    return { candidates, split, error: null };
+  } catch (e) {
+    return { candidates: [], split, error: String((e && e.message) || e).split('\n')[0] };
+  }
+}
+/** A candidate list as the report line reads it. */
+function fmtCandidates(lc) {
+  if (lc.error) return `lazy-load candidate not measured: ${lc.error}`;
+  const one = (c) => `${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (imported by ${c.importers.join(', ') || 'nothing static'})`;
+  const [c, nx] = lc.candidates;
+  const parts = [c ? `next lazy-load candidate: ${one(c)}` : 'no eager module left outside BUNDLE.beforeCard'];
+  if (nx) parts.push(`then ${one(nx)}`);
+  parts.push(`already split: ${lc.split.join(', ') || 'none'}`);
+  return parts.join('; ');
 }
 
 /** A dist's entry bundle (main-<hash>.js), or its folder name when it has none. */
@@ -2330,12 +2434,12 @@ async function modeReport(args) {
   data.bundle = bundle;
   if (bundle) {
     const m = BUNDLE.main;
-    const c = BUNDLE.lazyCandidate;
-    const n = BUNDLE.nextCandidate;
+    const lc = lazyCandidates(srcRootOf(server.dist), server.dist);
+    data.lazyCandidates = lc;
     const b = BUNDLE.budgetBase;
     check(`bundle: main chunk gzip kB inside the budget (${bundle.file})`, bundle.pass, { gzipKB: bundle.gzipKB, delta: bundle.deltaGzipKB, budgetUsed: bundle.budgetUsedKB }, `<= ${b.gzipKB} + ${BUNDLE.gzipBudgetKB} (${b.at}); delta against ${m.at} ${m.gzipKB}`);
     check('bundle: main chunk raw kB against main (report-only)', null, { rawKB: bundle.rawKB, delta: bundle.deltaRawKB }, `main ${m.rawKB} (${m.at}); wave 1 ${BUNDLE.wave1.rawKB}; before wave 1 ${BUNDLE.beforeWave1.rawKB} raw, ${BUNDLE.beforeWave1.gzipKB} gzip`, true);
-    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, `lazy-load candidate this wave: ${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (${c.owners}); next for wave 4: ${n.module}, ${n.minKB} kB, ${n.gzipKB} kB gzip`, true);
+    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, fmtCandidates(lc), true);
   } else check('bundle: main chunk size (report-only)', null, 'no dist on disk (a --base run)', 'reported with --dist', true);
   const gating = data.checks.filter((c) => !c.reportOnly);
   data.verdict = data.leaks.length ? 'fail-closed' : gating.some((c) => c.pass === false) ? 'fail' : data.signUpMissing ? 'inconclusive' : 'pass';
@@ -2492,4 +2596,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { hostNote, BUNDLE, bundleSize, bundleCheck, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, FX_BARS, fxBar, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { hostNote, BUNDLE, bundleSize, bundleCheck, splitChunks, srcRootOf, eagerModules, lazyCandidates, fmtCandidates, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, FX_BARS, fxBar, BASELINE, VIEW_DEFS, POSE_TOL_RAD };

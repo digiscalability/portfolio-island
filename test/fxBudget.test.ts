@@ -1136,11 +1136,21 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
       wave1: { rawKB: number; gzipKB: number };
       beforeWave1: { rawKB: number; gzipKB: number };
       budgetBase: { rawKB: number; gzipKB: number };
-      lazyCandidate: { module: string; minKB: number; gzipKB: number };
-      nextCandidate: { module: string; minKB: number; gzipKB: number; how: string };
+      beforeCard: string[];
     };
     bundleSize: (dist: string) => Size | null;
     bundleCheck: (size: Size | null, base?: { rawKB: number; gzipKB: number }) => Check | null;
+    splitChunks: (dist: string | null) => Set<string>;
+    lazyCandidates: (
+      root: string,
+      dist: string | null,
+      n?: number,
+    ) => {
+      candidates: { module: string; minKB: number; gzipKB: number; importers: string[] }[];
+      split: string[];
+      error: string | null;
+    };
+    fmtCandidates: (lc: { candidates: unknown[]; split: string[]; error: string | null }) => string;
   };
   const nodeRequire = createRequire(import.meta.url);
   const fs = nodeRequire('node:fs') as typeof import('node:fs');
@@ -1171,8 +1181,6 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
       budgetUsedKB: 21.97,
       pass: true,
     });
-    // The candidate's how names the wave-4 contract (D drops the value import, A dynamic-imports).
-    expect(gate.BUNDLE.nextCandidate.how).toMatch(/D's SimpleUI\.ts.*A dynamic-imports/);
     const cfg = fs.readFileSync(path.resolve(__dirname, '../vite.config.ts'), 'utf8');
     expect(cfg).toMatch(/chunkSizeWarningLimit:\s*1000\b/);
   });
@@ -1226,16 +1234,60 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
     expect([ab.deltaRawKB, ab.deltaGzipKB]).toEqual([1.1, 0.26]);
   });
 
-  test('the report names a lazy-load candidate with its measured size', () => {
-    const c = gate.BUNDLE.lazyCandidate;
-    expect(c.module).toBe('Multiplayer.ts');
-    expect(c.minKB).toBeGreaterThan(gate.BUNDLE.wave1.rawKB - gate.BUNDLE.warnKB);
-    expect(c.gzipKB).toBeGreaterThan(0);
-    expect(fs.existsSync(path.resolve(__dirname, '..', c.module))).toBe(true);
-    const n = gate.BUNDLE.nextCandidate;
-    expect(n.module).toBe('Chat.ts');
-    expect(n.gzipKB).toBeGreaterThan(0);
-    expect(fs.existsSync(path.resolve(__dirname, '..', n.module))).toBe(true);
+  // Wave-4 integration: the pinned candidate (Multiplayer.ts) was already its
+  // own chunk. The report now measures the tree and skips what the dist splits.
+  test('the lazy-load candidate is a measured eager module the dist has not split off', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-lazy-'));
+    try {
+      const w = (f: string, s: string) => fs.writeFileSync(path.join(root, f), s);
+      w('index.html', '<script type="module" src="/entry.ts"></script>');
+      w(
+        'entry.ts',
+        "import { big } from './Big';\nimport { mid } from './Mid';\nimport { small } from './Small';\n" +
+          "void import('./Lazy');\nconsole.log(big, mid, small);\n",
+      );
+      const body = (name: string, n: number) =>
+        `export const ${name} = [${Array.from({ length: n }, (_, i) => `'${name}${i}'`).join(',')}];\n`;
+      w('Big.ts', body('big', 400));
+      w('Mid.ts', body('mid', 200));
+      w('Small.ts', body('small', 20));
+      w('Lazy.ts', body('lazy', 800));
+      // No dist: Lazy (import() only) is never eager; Big leads, then Mid.
+      const none = gate.lazyCandidates(root, null);
+      expect(none.error).toBeNull();
+      expect(none.candidates.map((c) => c.module)).toEqual(['Big.ts', 'Mid.ts']);
+      expect(none.candidates[0].importers).toEqual(['entry.ts']);
+      expect(none.candidates[0].minKB).toBeGreaterThan(none.candidates[1].minKB);
+      expect(none.candidates[0].gzipKB).toBeGreaterThan(0);
+      // A dist that already splits Big off: the report moves on to a real eager module.
+      const dist = path.join(root, 'dist');
+      fs.mkdirSync(path.join(dist, 'assets'), { recursive: true });
+      for (const f of [
+        'main-AAAAAAAA.js',
+        'three-BBBBBBBB.js',
+        'Big-Ab_c-123.js',
+        'Lazy-CCCCCCCC.js',
+      ])
+        fs.writeFileSync(path.join(dist, 'assets', f), 'x');
+      expect([...gate.splitChunks(dist)].sort()).toEqual(['Big', 'Lazy']);
+      const lc = gate.lazyCandidates(root, dist);
+      expect(lc.candidates.map((c) => c.module)).toEqual(['Mid.ts', 'Small.ts']);
+      const line = gate.fmtCandidates(lc);
+      expect(line).toMatch(
+        /^next lazy-load candidate: Mid\.ts, [\d.]+ kB minified, [\d.]+ kB gzip \(imported by entry\.ts\)/,
+      );
+      expect(line).toMatch(/already split: Big, Lazy$/);
+      // A tree it cannot bundle is reported, never thrown.
+      fs.rmSync(path.join(root, 'index.html'));
+      const bad = gate.lazyCandidates(root, dist);
+      expect(bad.candidates).toEqual([]);
+      expect(gate.fmtCandidates(bad)).toMatch(/^lazy-load candidate not measured: /);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+    // The whole-file exclusions stay a short documented list.
+    expect(gate.BUNDLE.beforeCard.length).toBeGreaterThanOrEqual(4);
+    expect(gate.BUNDLE.beforeCard.every((f) => f.endsWith('.ts'))).toBe(true);
   });
 });
 
