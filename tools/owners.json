@@ -300,6 +300,13 @@
       "files": ["SimpleRenderer.ts"],
       "where": "grassMarshal imports",
       "why": "the isLowTierDevice mock"
+    },
+    {
+      "test": "celInk",
+      "via": "import",
+      "files": ["FxBudget.ts"],
+      "where": "celInk imports (spy on fx.time, test at 467 on 647a20d)",
+      "why": "proves the canopy-sway amplitude getter does no fx.time timing, so perf-gate's 0 µs ledger line holds"
     }
   ]
 }
