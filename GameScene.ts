@@ -10770,25 +10770,40 @@ export class GameScene extends THREE.Scene {
   private readonly _coinCam = new THREE.Vector3();
 
   /** The popped coin's widest on-screen size, CSS px (B9): about two thirds
-   *  of the chase-view head, and on a 390x844 phone it clears the coin
-   *  toast below the head. */
+   *  of the desktop chase-view head. */
   static readonly COIN_POP_MAX_PX = 64;
+  /** ...and at most this share of the viewport's shorter side: on a 390 px
+   *  phone 64 px was wider than the head (39 px is two thirds of it). */
+  static readonly COIN_POP_MAX_FRAC = 0.1;
+  /** A sparkle's cap, as a share of the popped coin's. */
+  static readonly COIN_SPARK_PX_FRAC = 0.25;
   /** The coin disc's diameter at scale 1, u (buildCoinInstances' R x 2). */
   private static readonly COIN_DIAMETER = 0.6;
+
+  /** The popped coin's on-screen cap for a `viewW` x `viewH` viewport, px. */
+  static coinPopMaxPx(viewW: number, viewH: number): number {
+    return Math.min(
+      GameScene.COIN_POP_MAX_PX,
+      GameScene.COIN_POP_MAX_FRAC * Math.min(viewW > 0 ? viewW : Infinity, viewH),
+    );
+  }
 
   /**
    * The popped coin's pose (B9): `outQ` turns the disc's face (its local +Y)
    * to the camera, so it never pops edge-on, and the returned scale is
-   * `scale` capped so the disc spans at most COIN_POP_MAX_PX of a `viewH`
-   * px viewport. With no viewport (viewH 0) only the facing applies.
+   * `scale` capped so the disc spans at most `frac` x coinPopMaxPx of a
+   * `viewW` x `viewH` px viewport. With no viewport (viewH 0) only the
+   * facing applies. The sparkles take the same pose at COIN_SPARK_PX_FRAC.
    */
   static coinPopFit(
     at: THREE.Vector3,
     camPos: THREE.Vector3,
     fovDeg: number,
+    viewW: number,
     viewH: number,
     scale: number,
     outQ: THREE.Quaternion,
+    frac = 1,
   ): number {
     const toCam = GameScene._popDir.copy(camPos).sub(at);
     const d = toCam.length();
@@ -10796,7 +10811,7 @@ export class GameScene extends THREE.Scene {
     else outQ.identity();
     if (!(viewH > 0) || !(fovDeg > 0) || d <= 1e-6) return scale;
     const pxPerU = viewH / (2 * d * Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2));
-    const cap = GameScene.COIN_POP_MAX_PX / (GameScene.COIN_DIAMETER * pxPerU);
+    const cap = (frac * GameScene.coinPopMaxPx(viewW, viewH)) / (GameScene.COIN_DIAMETER * pxPerU);
     return Math.min(scale, cap);
   }
   private static readonly _popDir = new THREE.Vector3();
@@ -10810,6 +10825,11 @@ export class GameScene extends THREE.Scene {
     const mesh = this.coinMesh;
     if (!mesh) return;
     const reduced = a11y.reducedMotion;
+    const cam = this.camera as THREE.PerspectiveCamera | undefined;
+    const hasWin = typeof window !== 'undefined';
+    const viewW = hasWin ? window.innerWidth : 0;
+    const viewH = hasWin ? window.innerHeight : 0;
+    const camPos = cam ? cam.getWorldPosition(this._coinCam) : null;
     for (const rec of this.coins) {
       let scale = rec.mesh.visible ? 1 : 0;
       const p = this._coinP.copy(rec.pos);
@@ -10829,19 +10849,10 @@ export class GameScene extends THREE.Scene {
           p.copy(rec.home).addScaledVector(n, rise);
           scale = (1 + 0.35 * u) * (ct < 0.38 ? 1 : Math.max(0, 1 - (ct - 0.38) / 0.07));
         }
-        // Face the camera and keep to COIN_POP_MAX_PX on screen: a pickup
+        // Face the camera and keep to coinPopMaxPx on screen: a pickup
         // next to the camera popped edge-on as a slab across a villager.
-        const cam = this.camera as THREE.PerspectiveCamera | undefined;
-        if (cam && scale > 0) {
-          const viewH = typeof window !== 'undefined' ? window.innerHeight : 0;
-          scale = GameScene.coinPopFit(
-            p,
-            cam.getWorldPosition(this._coinCam),
-            cam.fov,
-            viewH,
-            scale,
-            this._coinQ,
-          );
+        if (cam && camPos && scale > 0) {
+          scale = GameScene.coinPopFit(p, camPos, cam.fov, viewW, viewH, scale, this._coinQ);
           this._coinS.setScalar(scale);
           mesh.setMatrixAt(
             rec.idx,
@@ -10872,8 +10883,22 @@ export class GameScene extends THREE.Scene {
         .copy(sp.at)
         .addScaledVector(sp.vel, age)
         .addScaledVector(n, -4 * age * age);
-      this._coinQ.setFromAxisAngle(n, age * 30 + j);
-      this._coinS.setScalar(0.28 * (1 - age / 0.5));
+      // Face-on to the camera like the pop, and capped to a share of it:
+      // spun about the normal they read as edge-on brown dashes.
+      let s = 0.28 * (1 - age / 0.5);
+      if (cam && camPos) {
+        s = GameScene.coinPopFit(
+          this._coinP,
+          camPos,
+          cam.fov,
+          viewW,
+          viewH,
+          s,
+          this._coinQ,
+          GameScene.COIN_SPARK_PX_FRAC,
+        );
+      } else this._coinQ.setFromAxisAngle(n, age * 30 + j);
+      this._coinS.setScalar(s);
       mesh.setMatrixAt(base + j, this._coinM.compose(this._coinP, this._coinQ, this._coinS));
     }
     mesh.instanceMatrix.needsUpdate = true;

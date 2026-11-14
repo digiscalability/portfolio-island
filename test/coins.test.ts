@@ -175,10 +175,14 @@ describe('the pop faces the camera and stays small on screen (B9 play fix)', () 
     const cam = new THREE.Vector3(1.2, 78.3, 2.1); // about 2.2 u away, the 21:00 case
     const q = new THREE.Quaternion();
     const d = cam.distanceTo(at);
-    for (const h of [900, 844]) {
-      const s = GameScene.coinPopFit(at, cam, 50, h, 1.35, q);
+    for (const [w, h, max] of [
+      [1440, 900, 64],
+      [390, 844, 39],
+    ]) {
+      expect(GameScene.coinPopMaxPx(w, h)).toBeCloseTo(max, 9);
+      const s = GameScene.coinPopFit(at, cam, 50, w, h, 1.35, q);
       expect(px(1.35, d, 50, h)).toBeGreaterThan(GameScene.COIN_POP_MAX_PX * 2);
-      expect(px(s, d, 50, h)).toBeCloseTo(GameScene.COIN_POP_MAX_PX, 5);
+      expect(px(s, d, 50, h)).toBeCloseTo(max, 5);
       const face = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
       const toCam = cam.clone().sub(at).normalize();
       expect(face.dot(toCam)).toBeCloseTo(1, 6); // the disc's face, not its rim
@@ -189,9 +193,9 @@ describe('the pop faces the camera and stays small on screen (B9 play fix)', () 
     const at = new THREE.Vector3(0, 77.75, 0);
     const cam = new THREE.Vector3(0, 82, 14);
     const q = new THREE.Quaternion();
-    expect(GameScene.coinPopFit(at, cam, 50, 900, 1.35, q)).toBe(1.35);
+    expect(GameScene.coinPopFit(at, cam, 50, 1440, 900, 1.35, q)).toBe(1.35);
     expect(px(1.35, cam.distanceTo(at), 50, 900)).toBeLessThan(GameScene.COIN_POP_MAX_PX);
-    expect(GameScene.coinPopFit(at, new THREE.Vector3(0, 78, 1), 50, 0, 1.2, q)).toBe(1.2);
+    expect(GameScene.coinPopFit(at, new THREE.Vector3(0, 78, 1), 50, 0, 0, 1.2, q)).toBe(1.2);
   });
 
   test('the live instance: the popped coin is face-on and inside the cap; sparkles clear its disc', () => {
@@ -227,7 +231,7 @@ describe('the pop faces the camera and stays small on screen (B9 play fix)', () 
     const d = cam.position.distanceTo(p);
     expect(s.x).toBeGreaterThan(0);
     expect(px(s.x, d, cam.fov, window.innerHeight)).toBeLessThanOrEqual(
-      GameScene.COIN_POP_MAX_PX + 1e-6,
+      GameScene.coinPopMaxPx(window.innerWidth, window.innerHeight) + 1e-6,
     );
     const face = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
     expect(face.dot(cam.position.clone().sub(p).normalize())).toBeGreaterThan(0.999);
@@ -237,6 +241,20 @@ describe('the pop faces the camera and stays small on screen (B9 play fix)', () 
     expect(sc.coinSparks).toHaveLength(6);
     for (const sp of sc.coinSparks) {
       expect(sp.at.distanceTo(popAt)).toBeGreaterThan(0.3 * 1.35 + 0.3 * 0.28);
+    }
+    // The sparkles face the camera too (never edge-on dashes), each inside
+    // COIN_SPARK_PX_FRAC of the pop's cap.
+    const cap =
+      GameScene.COIN_SPARK_PX_FRAC * GameScene.coinPopMaxPx(window.innerWidth, window.innerHeight);
+    for (let j = 0; j < 6; j++) {
+      sc.coinMesh!.getMatrixAt(1 + j, m);
+      m.decompose(p, q, s);
+      expect(s.x).toBeGreaterThan(0);
+      expect(px(s.x, cam.position.distanceTo(p), cam.fov, window.innerHeight)).toBeLessThanOrEqual(
+        cap + 1e-6,
+      );
+      const f = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+      expect(f.dot(cam.position.clone().sub(p).normalize())).toBeGreaterThan(0.999);
     }
     sc.coins = savedCoins;
     sc.coinMesh = null;
