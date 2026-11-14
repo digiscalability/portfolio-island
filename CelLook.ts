@@ -21,6 +21,7 @@
  */
 import * as THREE from 'three';
 
+import { a11y } from './Accessibility';
 import { fx } from './FxBudget';
 import { SimpleRenderer } from './SimpleRenderer';
 import { isRealTheme } from './Theme';
@@ -183,6 +184,180 @@ export function updateCelRim(sunWorldDir: THREE.Vector3, camera: THREE.Camera): 
   for (const u of rimRegistry) u.uCelSunDir.value.copy(_sunView);
 }
 
+// ── 3b. Canopy sway (C9) ────────────────────────────────────────────────────
+//
+// Tree canopies breathe in the vertex shader. The tree geometries carry a
+// per-vertex `aCanopy` weight: (h/H)^2 on canopy vertices (h the vertex's
+// height in the tree, H the tree's height) and 0 on the trunk, so trunks stay
+// plumb (world law 1) and the crown moves most. The SAME chunk runs in the
+// tree material and once in the shared ink material, and a hull is a clone of
+// its body's geometry, so a tree's ink moves with its crown vertex for vertex.
+//
+// DEFAULT-ATTRIBUTE RISK: a vertex attribute a geometry does not supply reads
+// the GL context's current generic value at that location, which is global
+// state (three writes generic values for its own defaults, e.g. colour
+// (1,1,1), at whatever location they had in another program). So "a hull
+// without aCanopy reads 0" is NOT safe: bakeHullGeometry and the merged phone
+// hulls always carry the attribute, copied from the source or zero-filled.
+//
+// gust is recomputed in GLSL from the shared grass clock with GameScene's own
+// formula (1 + 0.7*max(0, sin(t*0.25)), GameScene.update), so nothing in B's
+// file changes. Reduced motion halves the amplitude; with the 'canopySway'
+// switch off it is 0 (same program, no motion).
+
+fx.register('canopySway', { desktop: true, low: true });
+
+/**
+ * The sway's constants (u, rad/s). The GLSL below and canopySwayOffset share them.
+ * The brief's 0.06/0.02 u moved a crown top about 3 px at 30 u (E's env.cjs,
+ * pixels), far short of its own 15-30 px bar, so the amplitudes are 5x/3x and
+ * a quarter-cycle-shifted cross term traces a narrow ellipse: the crown moves
+ * on screen whichever way the camera looks along the main axis.
+ */
+export const CANOPY_SWAY = {
+  amp: 0.3,
+  ampFast: 0.06,
+  /** The cross axis's amplitude (u), on cos of the slow term. */
+  ampCross: 0.18,
+  w: 0.8,
+  wFast: 2.3,
+  phaseFast: 1.7,
+  gustW: 0.25,
+  gust: 0.7,
+  /** The sway's horizontal direction in the tree's local XZ plane (unit). */
+  dirX: 0.857493,
+  dirZ: 0.514496,
+} as const;
+
+/** Per-tree phase from the mesh's world translation (GLSL: modelMatrix[3]). */
+export function canopyPhase(x: number, y: number, z: number): number {
+  return x * 0.173 + y * 0.297 + z * 0.419;
+}
+
+/** GameScene.update's gust, mirrored. */
+export function canopyGust(t: number): number {
+  return 1 + CANOPY_SWAY.gust * Math.max(0, Math.sin(t * CANOPY_SWAY.gustW));
+}
+
+/**
+ * The chunk's math on the CPU: the local-space offset [dx, dz] added to a
+ * vertex with canopy weight `w`, at time `t`, for a tree with phase `phase`,
+ * at amplitude scale `amp` (1, 0.5 reduced motion, 0 off).
+ */
+export function canopySwayOffset(w: number, t: number, phase: number, amp = 1): [number, number] {
+  const s =
+    w *
+    (CANOPY_SWAY.amp * Math.sin(t * CANOPY_SWAY.w + phase) +
+      CANOPY_SWAY.ampFast * Math.sin(t * CANOPY_SWAY.wFast + CANOPY_SWAY.phaseFast * phase)) *
+    canopyGust(t) *
+    amp;
+  const c = w * CANOPY_SWAY.ampCross * Math.cos(t * CANOPY_SWAY.w + phase) * canopyGust(t) * amp;
+  // Main axis (dirX, dirZ); cross axis (-dirZ, dirX).
+  return [s * CANOPY_SWAY.dirX - c * CANOPY_SWAY.dirZ, s * CANOPY_SWAY.dirZ + c * CANOPY_SWAY.dirX];
+}
+
+/**
+ * Write a tree geometry's aCanopy weights from per-vertex canopy flags
+ * (1 canopy, 0 trunk): weight = flag * (y / H)^2 with H the geometry's top.
+ * Allocates no three object (no uuid, so no seeded draw). Returns the geometry.
+ */
+export function bakeCanopyWeights(
+  geo: THREE.BufferGeometry,
+  flags: Float32Array,
+): THREE.BufferGeometry {
+  const pos = geo.getAttribute('position');
+  let top = 0;
+  for (let i = 0; i < pos.count; i++) top = Math.max(top, pos.getY(i));
+  const w = new Float32Array(pos.count);
+  if (top > 1e-6) {
+    for (let i = 0; i < pos.count; i++) {
+      const r = Math.max(0, pos.getY(i)) / top;
+      w[i] = (flags[i] ?? 0) * r * r;
+    }
+  }
+  geo.setAttribute('aCanopy', new THREE.BufferAttribute(w, 1));
+  return geo;
+}
+
+/** Zero-fill aCanopy on a geometry that has none (see the default-attribute risk). */
+function ensureCanopyAttr(geo: THREE.BufferGeometry): void {
+  if (geo.getAttribute('aCanopy')) return;
+  const n = geo.getAttribute('position').count;
+  geo.setAttribute('aCanopy', new THREE.BufferAttribute(new Float32Array(n), 1));
+}
+
+let canopyTimeSrc: { value: number } = { value: 0 };
+/** Island hands over its grass clock (GameScene advances it every frame). */
+export function setCanopyTimeSource(u: { value: number }): void {
+  canopyTimeSrc = u;
+}
+
+/**
+ * The amplitude scale: 0 with the switch off, 0.5 under reduced motion, else 1.
+ * NOT wrapped in fx.time: the sway is shader-only and this switch read is its
+ * only CPU, which plan-r3's ledger holds at 0 µs. The getter runs at every
+ * uniform upload (several times a frame), so a stopwatch here measured its own
+ * clock reads (4.4 µs desktop, 1.3 µs low tier under ?perf=1) and failed the
+ * 0 µs line; untimed, perf-gate reads the row n/a, as its ledger comment says.
+ */
+const canopyAmpNow = (): number => (fx.on('canopySway') ? (a11y.reducedMotion ? 0.5 : 1) : 0);
+
+/** One uniform set shared by every sway program; read at upload. */
+const canopyUniforms = {
+  uCanopyTime: {
+    get value(): number {
+      return canopyTimeSrc.value;
+    },
+  },
+  uCanopyAmp: {
+    get value(): number {
+      return canopyAmpNow();
+    },
+  },
+};
+
+const f3 = (n: number): string => n.toFixed(3);
+const CANOPY_SWAY_VERTEX = `#include <begin_vertex>
+{
+	// C9 canopy sway (CelLook.canopySwayOffset mirrors this).
+	float cw = aCanopy;
+	if ( cw > 0.0 ) {
+		vec3 cTree = modelMatrix[ 3 ].xyz;
+		float cPh = dot( cTree, vec3( 0.173, 0.297, 0.419 ) );
+		float cT = uCanopyTime;
+		float cGust = 1.0 + ${f3(CANOPY_SWAY.gust)} * max( 0.0, sin( cT * ${f3(CANOPY_SWAY.gustW)} ) );
+		float cS = cw * ( ${f3(CANOPY_SWAY.amp)} * sin( cT * ${f3(CANOPY_SWAY.w)} + cPh ) + ${f3(CANOPY_SWAY.ampFast)} * sin( cT * ${f3(CANOPY_SWAY.wFast)} + ${f3(CANOPY_SWAY.phaseFast)} * cPh ) ) * cGust * uCanopyAmp;
+		float cC = cw * ${f3(CANOPY_SWAY.ampCross)} * cos( cT * ${f3(CANOPY_SWAY.w)} + cPh ) * cGust * uCanopyAmp;
+		transformed.xz += cS * vec2( ${CANOPY_SWAY.dirX.toFixed(6)}, ${CANOPY_SWAY.dirZ.toFixed(6)} ) + cC * vec2( ${(-CANOPY_SWAY.dirZ).toFixed(6)}, ${CANOPY_SWAY.dirX.toFixed(6)} );
+	}
+}`;
+
+/**
+ * Inject the canopy sway into a material's vertex shader. Chains any
+ * existing onBeforeCompile; idempotent. The trees' material and the shared
+ * ink material take it; nothing else needs to (geometry without canopy
+ * weights moves by 0).
+ */
+export function applyCanopySway(mat: THREE.Material): void {
+  const tagged = mat.userData as { canopySway?: boolean };
+  if (tagged.canopySway) return;
+  tagged.canopySway = true;
+  const prev = mat.onBeforeCompile;
+  mat.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev.call(mat, shader, renderer);
+    Object.assign(shader.uniforms, canopyUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        'void main() {',
+        'attribute float aCanopy;\nuniform float uCanopyTime;\nuniform float uCanopyAmp;\nvoid main() {',
+      )
+      .replace('#include <begin_vertex>', CANOPY_SWAY_VERTEX);
+  };
+  const prevKey = mat.customProgramCacheKey.bind(mat);
+  mat.customProgramCacheKey = () => `${prevKey()}|canopy-v1`;
+  mat.needsUpdate = true;
+}
+
 // ── 3. Inverted-hull ink outlines ───────────────────────────────────────────
 
 const INK_COLOR = 0x1c2430;
@@ -196,6 +371,8 @@ function getInkMat(): THREE.MeshBasicMaterial {
       fog: true, // Sable-style: lines fade with the same fog as the world
     });
     inkMat.visible = inkVisible; // a hull baked mid-intro joins the current state
+    // C9: the one sway chunk; hulls without canopy weights carry zeros.
+    applyCanopySway(inkMat);
   }
   return inkMat;
 }
@@ -304,6 +481,9 @@ function bakeHullGeometry(geo: THREE.BufferGeometry, thickness: number): THREE.B
     );
   }
   pos.needsUpdate = true;
+  // C9: a tree's hull keeps its body's canopy weights (clone() copied them);
+  // everything else gets explicit zeros, never the context's generic value.
+  ensureCanopyAttr(hull);
   hullGeoCache.set(key, hull);
   return hull;
 }
@@ -452,6 +632,7 @@ function mergedHullMesh(pos: number[], idx: number[], name: string): THREE.Mesh 
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setIndex(idx);
   geo.computeBoundingSphere();
+  ensureCanopyAttr(geo); // C9: merged hulls never sway
   const hull = new THREE.Mesh(geo, getInkMat());
   hull.name = name;
   hull.userData.isCelHull = true;

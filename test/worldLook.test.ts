@@ -2111,3 +2111,175 @@ describe('the GLB props land opaque on the low tier (C carry-over, no-KHR compil
     expect(src).toContain('if (!copy.userData.glbFade) continue;');
   });
 });
+
+describe('C10: the roof markers paint the HUD glyphs, never an emoji', () => {
+  const stubIsland = {
+    sampleSurfaceByDirection: () => {
+      throw new Error('stub: Zone falls back to an ideal-sphere seat');
+    },
+    getRadius: () => 100,
+  } as unknown as Island;
+  const ZONE_EMOJI: Record<string, string> = {
+    welcome: '🏛️',
+    professional: '💼',
+    projects: '🚀',
+    personal: '🎨',
+    contact: '📬',
+  };
+
+  test('each district stroke()s its own Path2D glyph on a cream disc; fillText never runs', () => {
+    const texts: string[] = [];
+    const paths: string[] = [];
+    const fills: string[] = [];
+    const g = globalThis as unknown as { Path2D?: unknown };
+    const hadPath2D = g.Path2D;
+    class FakePath2D {
+      constructor(public d: string) {}
+    }
+    g.Path2D = FakePath2D;
+    const proto = HTMLCanvasElement.prototype as unknown as { getContext: unknown };
+    const prevGetContext = proto.getContext;
+    proto.getContext = function (this: HTMLCanvasElement): unknown {
+      const state: Record<string, unknown> = {
+        canvas: this,
+        fillText: (s: string) => texts.push(String(s)),
+        strokeText: (s: string) => texts.push(String(s)),
+        stroke: (p?: unknown) => {
+          if (p instanceof FakePath2D) paths.push(p.d);
+        },
+        fill: () => fills.push(String(state.fillStyle)),
+        measureText: (s: string) => ({ width: String(s ?? '').length * 8 }),
+      };
+      return new Proxy(state, {
+        get: (t, k) => (k in t ? t[k as string] : () => {}),
+        set: (t, k, v) => {
+          t[k as string] = v;
+          return true;
+        },
+      });
+    };
+    try {
+      for (const id of Object.keys(ZONE_EMOJI)) {
+        new Zone(
+          {
+            id,
+            name: id,
+            description: '',
+            position: new THREE.Vector3(0, 100, 0),
+            color: 0x4b5bd6,
+            icon: ZONE_EMOJI[id],
+          },
+          stubIsland,
+        );
+      }
+    } finally {
+      proto.getContext = prevGetContext;
+      g.Path2D = hadPath2D;
+    }
+    // No text at all, so no Extended_Pictographic code point either.
+    expect(texts.filter((t) => /\p{Extended_Pictographic}/u.test(t))).toEqual([]);
+    expect(texts).toEqual([]);
+    // One SVG path per district, five different glyphs. That they are the
+    // ui/icons.ts exports is pinned on the source below (D's file is not
+    // imported here: lock-census rule).
+    expect(paths).toHaveLength(5);
+    expect(new Set(paths).size).toBe(5);
+    for (const d of paths) expect(d).toMatch(/^M[\d.]/);
+    expect(fills.filter((f) => f === '#fff6d8')).toHaveLength(5);
+  });
+
+  test('the disc has a 4 px #1c2430 rim, and the icon is keyed by id, not by the emoji', () => {
+    const body = decl('Zones.ts', 'paintDistrictIcon');
+    expect(body).toContain('ctx.lineWidth = 4;');
+    expect(stripped('Zones.ts')).toContain("export const ZONE_ICON_RIM = '#1c2430';");
+    expect(body).toContain('DISTRICT_GLYPHS[id]');
+    expect(body).toContain('ctx.stroke(new Path2D(glyph));');
+    expect(stripped('Zones.ts')).toContain("import { DISTRICT_GLYPHS } from './ui/icons';");
+    expect(body).toContain("typeof Path2D !== 'function'");
+    expect(decl('Zones.ts', 'createBuilding')).not.toContain('fillText');
+    expect(stripped('Zones.ts')).not.toMatch(/Segoe UI Emoji|Noto Color Emoji/);
+  });
+});
+
+describe('C7: the CBD towers in the island style, with no facade canvases', () => {
+  test('the facade generator is gone, and its measured draws are burned before the checkpoint', () => {
+    expect(stripped('TextureGenerator.ts')).not.toContain('createBuildingTextures');
+    expect(stripped('Island.ts')).not.toContain('createBuildingTextures');
+    expect(stripped('Island.ts')).toMatch(
+      /burnDraws\(CBD_FACADE_DRAWS\);\s*Island\.seedMark\('island:buildingTextures'\);/,
+    );
+    expect(stripped('Island.ts')).toContain('export const CBD_FACADE_DRAWS = 450;');
+    // The plain box's 4 draws are burned and the tower is built on a local stream.
+    expect(stripped('Island.ts')).toMatch(
+      /burnDraws\(4\);\s*const bGeom = withLocalRng\(\(\) => buildCbdTowerGeometry\(i\), 0xc7b10000 \+ i\);/,
+    );
+  });
+
+  test('a tower is one two-tone vertex-coloured geometry with a parapet above the roof', async () => {
+    const { buildCbdTowerGeometry, CBD_TONES } = await import('../Island');
+    const g = buildCbdTowerGeometry(0);
+    const pos = g.getAttribute('position');
+    const col = g.getAttribute('color');
+    expect(col).toBeDefined();
+    expect(col.count).toBe(pos.count);
+    g.computeBoundingBox();
+    const bb = g.boundingBox as THREE.Box3;
+    // The body spans the old box's 5.2 u, centred; the parapet stands 0.35 u over it.
+    expect(bb.min.y).toBeCloseTo(-2.6, 5);
+    expect(bb.max.y).toBeCloseTo(2.95, 5);
+    expect(bb.max.x).toBeLessThanOrEqual(1.56);
+    const tones = new Set<string>();
+    for (let k = 0; k < col.count; k++) {
+      tones.add(`${col.getX(k).toFixed(3)},${col.getY(k).toFixed(3)},${col.getZ(k).toFixed(3)}`);
+    }
+    // Body, base course and trim: the body's tone and the stone base are the two facade tones.
+    expect(tones.size).toBe(3);
+    const hex = (c: number): string => {
+      const v = new THREE.Color(c);
+      return `${v.r.toFixed(3)},${v.g.toFixed(3)},${v.b.toFixed(3)}`;
+    };
+    expect(tones).toContain(hex(CBD_TONES.bodies[0]));
+    expect(tones).toContain(hex(CBD_TONES.base));
+    expect(tones).toContain(hex(CBD_TONES.trim));
+  });
+});
+
+describe('C11: the ChocoMate thumbnail has no scrollbar strip', () => {
+  /** A WebP's canvas size from its RIFF header (VP8, VP8L or VP8X). */
+  const webpSize = (buf: Buffer): { w: number; h: number } => {
+    expect(buf.toString('ascii', 0, 4)).toBe('RIFF');
+    expect(buf.toString('ascii', 8, 12)).toBe('WEBP');
+    const kind = buf.toString('ascii', 12, 16);
+    if (kind === 'VP8X') return { w: 1 + buf.readUIntLE(24, 3), h: 1 + buf.readUIntLE(27, 3) };
+    if (kind === 'VP8L') {
+      const b = buf.readUInt32LE(21);
+      return { w: 1 + (b & 0x3fff), h: 1 + ((b >> 14) & 0x3fff) };
+    }
+    expect(kind).toBe('VP8 ');
+    return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+  };
+
+  test('chocomate.webp is re-exported at 808x384, 18 KB or less, at the same path', () => {
+    const buf = readFileSync(join(process.cwd(), 'public/assets/panels/chocomate.webp'));
+    expect(webpSize(buf)).toEqual({ w: 808, h: 384 });
+    expect(buf.length).toBeLessThanOrEqual(18 * 1024);
+  });
+});
+
+describe('C9: the island trees carry canopy weights and the sway chunk', () => {
+  test('trunks flag 0, crowns 1, the merged tree is weighted, and the clock is the grass clock', () => {
+    const src = stripped('Island.ts');
+    expect(src).toContain('applyCanopySway(treeMat);');
+    expect(src).toContain('setCanopyTimeSource(this.grassTimeUniform);');
+    expect(src).toContain(
+      'const trunk = colorHex === TRUNK_COLOR || colorHex === DARK_TRUNK_COLOR;',
+    );
+    expect(src).toMatch(
+      /const treeGeo = mergeGeometries\(parts, false\);\s*bakeCanopyWeights\(treeGeo, treeGeo\.getAttribute\('aCanopy'\)\.array as Float32Array\);/,
+    );
+    // The per-effect switch, by the exact name E's ledger reads.
+    expect(stripped('CelLook.ts')).toContain(
+      "fx.register('canopySway', { desktop: true, low: true });",
+    );
+  });
+});

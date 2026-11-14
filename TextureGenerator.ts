@@ -53,65 +53,6 @@ export class TextureGenerator {
     return { albedo, normal, roughness };
   }
 
-  // Create simple building facade textures (brick-ish) and matching normal/ao/roughness
-  public static createBuildingTextures(w = 512, h = 512) {
-    const c = document.createElement('canvas');
-    c.width = w;
-    c.height = h;
-    const ctx = c.getContext('2d')!;
-    // base plaster/paint
-    ctx.fillStyle = '#b9c0c9'; // light slate mortar — reads as pale grout lines
-    ctx.fillRect(0, 0, w, h);
-    // add bricks/tiles rows
-    ctx.fillStyle = '#8b95a1'; // mid slate/graphite brick
-    const rowH = 28;
-    for (let y = 0; y < h; y += rowH) {
-      for (let x = 0; x < w; x += 48) {
-        const jitter = Math.floor((Math.random() - 0.5) * 6);
-        ctx.fillRect(x + jitter, y + 6, 44, rowH - 10);
-        ctx.fillStyle = `rgba(0,0,0,${(Math.random() * 0.06).toFixed(2)})`;
-        ctx.fillRect(x + jitter + 1, y + rowH - 6, 42, 2);
-        ctx.fillStyle = '#8b95a1';
-      }
-    }
-
-    const albedo = new THREE.CanvasTexture(c);
-    albedo.colorSpace = THREE.SRGBColorSpace;
-    albedo.wrapS = THREE.RepeatWrapping;
-    albedo.wrapT = THREE.RepeatWrapping;
-
-    const normal = this.createNormalMapFromCanvas(c);
-
-    // AO as subtle darkening near edges
-    const aoC = document.createElement('canvas');
-    aoC.width = w;
-    aoC.height = h;
-    const aoc = aoC.getContext('2d')!;
-    aoc.fillStyle = 'rgba(0,0,0,0)';
-    aoc.fillRect(0, 0, w, h);
-    // vignette AO
-    const grad = aoc.createRadialGradient(w / 2, h / 2, w * 0.2, w / 2, h / 2, w * 0.7);
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.18)');
-    aoc.fillStyle = grad;
-    aoc.fillRect(0, 0, w, h);
-    const ao = new THREE.CanvasTexture(aoC);
-    ao.wrapS = THREE.RepeatWrapping;
-    ao.wrapT = THREE.RepeatWrapping;
-
-    const roughC = document.createElement('canvas');
-    roughC.width = w;
-    roughC.height = h;
-    const rctx = roughC.getContext('2d')!;
-    rctx.fillStyle = '#b0b0b0';
-    rctx.fillRect(0, 0, w, h);
-    const rough = new THREE.CanvasTexture(roughC);
-    rough.wrapS = THREE.RepeatWrapping;
-    rough.wrapT = THREE.RepeatWrapping;
-
-    return { albedo, normal, roughness: rough, ao };
-  }
-
   // Emissive window grid for the CBD office towers: warm lit panes (plus a few
   // dark "empty office" panes) on a transparent background. Used as both map
   // and emissiveMap so one plane reads as glass by day and a lit grid after
