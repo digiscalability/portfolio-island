@@ -1842,6 +1842,32 @@ describe('wave-3 bundle carry-over: Multiplayer is its own chunk', () => {
     );
   });
 
+  test('NpcQuests is its own chunk too: fetched before world-gen, awaited where it is built', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("import type { NpcQuestSystem } from './NpcQuests';");
+    expect(m).not.toMatch(/import\s*\{\s*NpcQuestSystem\s*\}\s*from\s*'\.\/NpcQuests'/);
+    const init = bodyOf(m, 'private async init(');
+    const start = init.indexOf(
+      "const npcQuestsModule = import('./NpcQuests').catch(() => import('./NpcQuests'));",
+    );
+    expect(start).toBeGreaterThan(init.indexOf('SimpleRenderer.preloadPostProcessing();'));
+    expect(start).toBeLessThan(init.indexOf('new GameScene()'));
+    // built at the same moment as before: after the world, before the markers
+    const built = init.indexOf('this.npcQuests = new (await npcQuestsModule).NpcQuestSystem();');
+    expect(built).toBeGreaterThan(init.indexOf('await this.scene.ready();'));
+    expect(built).toBeLessThan(
+      init.indexOf(
+        'this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());',
+      ),
+    );
+    // and nothing else in the app imports it as a value
+    for (const f of readdirSync(process.cwd()).filter(
+      (x) => x.endsWith('.ts') && x !== 'NpcQuests.ts',
+    )) {
+      expect(src(f), f).not.toMatch(/^import\s*\{[^}]*\}\s*from\s*'\.\/NpcQuests'/m);
+    }
+  });
+
   test('no other module imports Multiplayer as a value, so it stays out of the main chunk', () => {
     const files = readdirSync(process.cwd()).filter(
       (f) => f.endsWith('.ts') && f !== 'Multiplayer.ts',

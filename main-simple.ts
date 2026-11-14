@@ -67,7 +67,7 @@ import {
   isAiNpc,
   voiceProfileFor,
 } from './NpcChat';
-import { NpcQuestSystem } from './NpcQuests';
+import type { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import {
   coinAdoptValue,
@@ -801,6 +801,13 @@ export class SimpleApp {
       // it before the world is built, so its fetch starts here and overlaps
       // world-gen; the await where it is constructed is then only a microtask.
       // A failed fetch resolves null: the island plays solo, chat stays off.
+      // NpcQuests is its own chunk (wave 4, bundle): its first use is after
+      // the world is built (the quest markers), so its fetch starts here and
+      // overlaps world-gen like Multiplayer's; the await where it is
+      // constructed is then only a microtask. Quests are part of the game, so
+      // a failed fetch is tried once more before init fails as it would on a
+      // failed main chunk.
+      const npcQuestsModule = import('./NpcQuests').catch(() => import('./NpcQuests'));
       const multiplayerModule = import('./Multiplayer').catch((e: unknown) => {
         console.warn('Multiplayer chunk failed to load; playing solo:', e);
         return null;
@@ -937,7 +944,7 @@ export class SimpleApp {
       });
 
       // NPC quests: stateful dialogue + rewards layered over ambient lines
-      this.npcQuests = new NpcQuestSystem();
+      this.npcQuests = new (await npcQuestsModule).NpcQuestSystem();
       // P2-A10: the Gardener counts meadow pickups, not held coins, so a
       // shop purchase or a lesson's pay no longer moves the quest. Without
       // the scene's feed, the held-coins arithmetic as before.
