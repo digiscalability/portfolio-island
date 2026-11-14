@@ -17,6 +17,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 
+import { PROXIMITY_FRACTION, PROXIMITY_RADIUS } from '../Chat';
+import { WORLD_RADIUS } from '../WorldScale';
+
 // EOL-agnostic: a Windows checkout (core.autocrlf=true) hands these files over
 // as CRLF. No assertion below contains a line break.
 const src = (f: string): string =>
@@ -318,21 +321,32 @@ describe('from frontDoorPolish.test.ts', () => {
 
   test('a villager stop is re-read and held when its leg starts, released after', () => {
     const hold = method('main-simple.ts', 'private holdTourVillager');
-    expect(hold).toContain('this.tourVillager(stop.villagers)');
-    expect(hold).toContain('this.scene.getNpcPosition(who)');
-    expect(hold).toContain('this.frameTourStop(stop, p, this.clearTourBearing(stop, p))');
+    // the first villagers up are each scored, and the best frame is held
+    expect(hold).toContain('this.tourVillagers(stop.villagers, TOUR_VILLAGER_TRIES)');
+    expect(hold).toContain('this.scene.getNpcPosition(n)');
+    expect(hold).toContain('this.clearTourBearing(stop, at, n)');
+    expect(hold).toContain('rank * TOUR_VILLAGER_RANK_COST');
+    expect(hold).toContain('this.frameTourStop(stop, p, turn)');
     expect(hold).toContain('this.scene.setNpcDialogueHold(who)');
-    // the camera bearing is chosen for a clear line of sight to the villager
+    // the camera bearing is chosen for a clear line of sight to the villager,
+    // an uncluttered frame (props and the traffic fleet) and a face-on view
     const bearing = method('main-simple.ts', 'private clearTourBearing');
     expect(bearing).toContain('collisionMeshes');
-    expect(bearing).toContain('intersectObjects(blockers, false)');
+    expect(bearing).toContain('ray.intersectObjects(near, false)');
+    expect(bearing).toContain('ray.intersectObjects(props, false)');
+    expect(bearing).toContain("getObjectByName('traffic_cars')");
+    expect(bearing).toContain('TOUR_CLUTTER_GRID');
+    expect(bearing).toContain('return pickTourBearing(cands)');
+    expect(
+      stripped('main-simple.ts').match(/TOUR_VILLAGER_ALT,\s+TOUR_VILLAGER_BACK,\s+\w+Names,/g),
+    ).toHaveLength(2);
     const adv = method('main-simple.ts', 'private advanceTourStop');
     expect(adv.indexOf('this.releaseTourVillager()')).toBeGreaterThan(-1);
     expect(adv.indexOf('this.releaseTourVillager()')).toBeLessThan(adv.indexOf('tour.idx += 1'));
     expect(adv).toContain('this.holdTourVillager(tour.stops[tour.idx])');
     expect(method('main-simple.ts', 'private endTour')).toContain('this.releaseTourVillager()');
     // asleep villagers are hidden indoors: only frame one who is up
-    expect(method('main-simple.ts', 'private tourVillager')).toContain(
+    expect(method('main-simple.ts', 'private tourVillagers')).toContain(
       "this.scene.getNpcActivity(n) !== 'sleep'",
     );
   });
@@ -655,7 +669,11 @@ describe('from visualPolish.test.ts', () => {
     // The three boot-window Firebase touches run from idle slots (1.5s max
     // keeps the world beat arriving during the fly-in for buildAwayDelta).
     expect(main).toMatch(/idleDefer\(\s*\(\)\s*=>\s*connectWorldState/);
-    expect(main).toMatch(/idleDefer\(\(\)\s*=>\s*\{\s*void subscribeBenches/);
+    // worldBenches.ts itself comes in with import() in that slot (wave 4, bundle)
+    expect(main).toMatch(
+      /idleDefer\(\(\)\s*=>\s*\{\s*void import\('\.\/worldBenches'\)\s*\.then\(\(m\)\s*=>\s*m\.subscribeBenches\(/,
+    );
+    expect(main).not.toMatch(/^import [^;]*from '\.\/worldBenches';/m);
     // The postprocessing fetch starts BEFORE world gen so the RTT overlaps it.
     expect(main).toContain('SimpleRenderer.preloadPostProcessing()');
     expect(main.indexOf('SimpleRenderer.preloadPostProcessing()')).toBeLessThan(
@@ -1110,17 +1128,25 @@ describe('A6: First steps, wired into main-simple', () => {
     const m = stripped('main-simple.ts');
     // setupGuide builds no card; renderGuide builds the one card the first
     // time the guide runs, and arming draws it at once.
-    expect(bodyOf(m, 'private setupGuide(')).not.toContain('new GuideCard(');
-    expect(m.split('new GuideCard(').length - 1).toBe(1);
+    expect(bodyOf(m, 'private setupGuide(')).not.toContain('new mod.GuideCard(');
+    expect(m.split('new mod.GuideCard(').length - 1).toBe(1);
     expect(bodyOf(m, 'private createGuideCard(')).toContain(
-      'return new GuideCard(this.ui.getOverlay(), {',
+      'return new mod.GuideCard(this.ui.getOverlay(), {',
     );
+    // GuideCard.ts is out of the main chunk (wave 4, bundle): a type import,
+    // one import(), asked for while the welcome card is up, and a card that
+    // is not in yet draws on the frame it is.
+    expect(m).toContain("import type { GuideCard } from './GuideCard';");
+    expect(m).toContain("guideCardLoad ??= import('./GuideCard').then(");
+    expect(bodyOf(m, 'private createGuideCard(')).toContain('void loadGuideCard();');
+    expect(m).toContain('this.idleDefer(() => void loadGuideCard(), 2000);');
     const render = bodyOf(m, 'private renderGuide(');
     // ...or the recruiter route shows (P2-A4): a visit that never arms either
     // still carries no #ds-guide
     // ...or the Next chip (P2-A12)
     expect(render).toContain('if (!this.guideCard && !g.running() && !routeUp && !chipUp) return;');
     expect(render).toContain('const card = (this.guideCard ??= this.createGuideCard());');
+    expect(render).toContain('if (!card) return;');
     expect(m.split('this.createGuideCard()').length - 1).toBe(1);
     expect(bodyOf(m, 'private armGuide(')).toContain('this.renderGuide();');
   });
@@ -1329,7 +1355,7 @@ describe('P2-A1: indoors, Escape leaves and the outdoors stays out', () => {
     expect(u).toContain(
       'this.ui.toast(DISTRICT_INTRO[bestId], { hint: true, until: this.indoorsNow });',
     );
-    expect(u).toContain('{ hint: true, until: this.talkHintStale },');
+    expect(u).toContain('{ hint: true, until: this.talkHintStaleOrChatted },');
     expect(bodyOf(m(), 'private showLostHint(')).toContain(
       '{ hint: true, until: this.indoorsNow },',
     );
@@ -1678,7 +1704,7 @@ describe('P2-A12: the Next chip, wired into main-simple', () => {
     // the surface that was up draws its own end before the next one draws
     expect(render).toContain('const surface = want ?? this.guideSurface ?? null;');
     // still exactly one card, however many surfaces
-    expect(m().split('new GuideCard(').length - 1).toBe(1);
+    expect(m().split('new mod.GuideCard(').length - 1).toBe(1);
   });
 
   test("its buttons: 'next' folds and unfolds; 'goal:<id>' goes through 'ds:guide-to' with source next", () => {
@@ -1811,7 +1837,51 @@ describe('wave-3 bundle carry-over: Multiplayer is its own chunk', () => {
     // ...and the module is awaited only where it is constructed.
     const built = init.indexOf('new mpMod.Multiplayer(this.scene, this.scene.getPlayer())');
     expect(built).toBeGreaterThan(init.indexOf('const mpMod = await multiplayerModule;'));
-    expect(init).toContain('this.chat = multiplayer ? new Chat(multiplayer) : undefined;');
+    expect(init).toContain(
+      'this.chat = multiplayer && chatMod ? new chatMod.Chat(multiplayer) : undefined;',
+    );
+  });
+
+  test('P2-A14 on a phone: a shop sheet over the avatar steps aside after an equip', () => {
+    const m = stripped('main-simple.ts');
+    const shop = bodyOf(m, 'private openShop(');
+    const at = shop.indexOf('this.scene.getOrbitCamera().setMirrorPose(true);');
+    expect(at).toBeGreaterThan(-1);
+    expect(shop.indexOf('render();', at)).toBeLessThan(shop.indexOf('this.peekPastShop();', at));
+    const peek = bodyOf(m, 'private peekPastShop(');
+    // only when the sheet covers the avatar's spot; a docked shop is left alone
+    expect(peek).toContain('if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;');
+    // it comes back as it was, and takes no taps while it is aside
+    expect(peek).toContain("el.style.pointerEvents = 'none';");
+    expect(peek).toContain('const taps = el.style.pointerEvents;');
+    expect(peek).toContain('el.style.pointerEvents = taps;');
+    expect(peek).toContain('const fade = a11y.reducedMotion ? 0 : 200;');
+  });
+
+  test('NpcQuests is its own chunk too: fetched before world-gen, awaited where it is built', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("import type { NpcQuestSystem } from './NpcQuests';");
+    expect(m).not.toMatch(/import\s*\{\s*NpcQuestSystem\s*\}\s*from\s*'\.\/NpcQuests'/);
+    const init = bodyOf(m, 'private async init(');
+    const start = init.indexOf(
+      "const npcQuestsModule = import('./NpcQuests').catch(() => import('./NpcQuests'));",
+    );
+    expect(start).toBeGreaterThan(init.indexOf('SimpleRenderer.preloadPostProcessing();'));
+    expect(start).toBeLessThan(init.indexOf('new GameScene()'));
+    // built at the same moment as before: after the world, before the markers
+    const built = init.indexOf('this.npcQuests = new (await npcQuestsModule).NpcQuestSystem();');
+    expect(built).toBeGreaterThan(init.indexOf('await this.scene.ready();'));
+    expect(built).toBeLessThan(
+      init.indexOf(
+        'this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());',
+      ),
+    );
+    // and nothing else in the app imports it as a value
+    for (const f of readdirSync(process.cwd()).filter(
+      (x) => x.endsWith('.ts') && x !== 'NpcQuests.ts',
+    )) {
+      expect(src(f), f).not.toMatch(/^import\s*\{[^}]*\}\s*from\s*'\.\/NpcQuests'/m);
+    }
   });
 
   test('no other module imports Multiplayer as a value, so it stays out of the main chunk', () => {
@@ -1857,5 +1927,187 @@ describe('wave-3 integration: the next-parcel line is not stuck behind the pack 
     const line = s.indexOf('📬 Delivered. The next parcel waits near');
     expect(bump).toBeGreaterThan(-1);
     expect(line).toBeGreaterThan(bump);
+  });
+});
+
+describe('wave 4 P2-A8: the compass leads a race ring by ring, and laps are quiet', () => {
+  test('updateQuestCompass reads the next gate into a reused scratch and labels the ring', () => {
+    const u = bodyOf(stripped('main-simple.ts'), 'private updateQuestCompass(): void {');
+    expect(u).toContain('this.scene.getRaceNextGate?.(this._qcRaceGate) ?? null');
+    expect(u).toContain('st.racing = gate !== null;');
+    expect(u).toContain('`🏁 Ring ${gate.idx}/${gate.n - 1}`');
+    expect(u).toContain("'🏁 Finish line'");
+    expect(u).toContain("nearestVehiclePos?.('car', this._qcCar)");
+  });
+
+  test("'start' sets the racing flag and 'finish' or 'abort' clears it; it holds every hint", () => {
+    const s = stripped('main-simple.ts');
+    const ev = bodyOf(s, 'private onRaceEvent(e: RaceEvent): void {');
+    expect(ev).toContain("if (e.kind === 'start') this.racing = true;");
+    expect(ev).toContain(
+      "else if (e.kind === 'finish' || e.kind === 'abort') this.racing = false;",
+    );
+    expect(bodyOf(s, 'private guideHoldsHints(')).toContain('if (this.racing) return true;');
+    expect(bodyOf(s, 'private hintsQuiet(')).toContain('this.racing ||');
+  });
+});
+
+describe('wave 4 P2-A10: night feed, stale hints, the meadow counter', () => {
+  test('tossFeed reads the reason: night falls through to cat feed, else the roost line, never spent', () => {
+    const t = bodyOf(stripped('main-simple.ts'), 'private tossFeed(): void {');
+    expect(t).toContain(
+      "this.scene.throwBirdFeedReason?.() ?? (this.scene.throwBirdFeed() ? 'ok' : 'none')",
+    );
+    expect(t).toContain("if (why === 'night' && this.catFeed > 0) continue;");
+    const night = t.indexOf("if (why === 'night') {");
+    const spend = t.indexOf('this.birdFeed--;');
+    expect(night).toBeGreaterThan(-1);
+    expect(spend).toBeGreaterThan(night);
+    expect(t).toMatch(/birds are roosting/);
+  });
+
+  test('the talk hint is stale once chatted; the coin hint once the journal opened', () => {
+    const s = stripped('main-simple.ts');
+    expect(bodyOf(s, 'private readonly talkHintStaleOrChatted = (): boolean =>')).toContain(
+      "localStorage.getItem('ds_npc_chatted') === '1'",
+    );
+    expect(s).toContain('until: this.journalSeenNow,');
+    expect(s).toContain(
+      "if (!this.journalSeen && this.ui.panels.isOpen('journal')) this.journalSeen = true;",
+    );
+    expect(s).toContain('this.scene.setOnMeadowCoin((e) => this.npcQuests.onMeadowCoin(e));');
+  });
+});
+
+describe('wave 4 P2-A13: work sites, the School and the Bank explain themselves', () => {
+  test('a work site prompt names the board and opens Projects at its card, never stamping', () => {
+    const s = stripped('main-simple.ts');
+    expect(s).toContain("import { PROJECT_BOARDS } from './SignPainter';");
+    expect(s).toContain("['rankpilot', 'chocomate', 'island', 'banos', 'insta']");
+    const at = s.indexOf('} else if (landmark && !this.toolActionHere()) {');
+    const lm = s.slice(at, s.indexOf('} else if (this.ownedAxe', at));
+    expect(lm).toContain('PROJECT_BOARDS[landmark.i]');
+    expect(lm).toContain("{ source: 'landmark', anchor: SimpleApp.LANDMARK_ANCHORS[landmark.i] }");
+    expect(lm).not.toContain("'proximity'");
+    // ranked after talk and doors (nearby), before the tools
+    expect(s.indexOf('} else if (landmark && !this.toolActionHere()) {')).toBeGreaterThan(
+      s.indexOf('} else if (nearby) {'),
+    );
+    expect(s).toContain('!(landmark && landmark.dist < 3.5 && !buildOpp.own)');
+  });
+
+  test('the Bank says what the vault does; the tour frames the work sites', () => {
+    const s = stripped('main-simple.ts');
+    expect(s).toContain('the vault keeps your coins safe between visits');
+    expect(bodyOf(s, 'private startTour(')).toContain('sites ?? zones.get(');
+  });
+});
+
+describe('wave 4 P2-A11: hall exhibits, the room look and the Leave label', () => {
+  test('a hall passes its exhibits, the Leave button names the room, hire_cta says interior', () => {
+    const s = stripped('main-simple.ts');
+    const eb = bodyOf(s, 'private enterBuilding(');
+    expect(eb).toContain('SimpleApp.interiorExhibits(id, this.touchCopy())');
+    expect(eb).toContain('isZone ? undefined : id, exhibits);');
+    expect(eb).toContain('this.ui.showLeaveButton(() => this.exitBuilding(isZone), title);');
+    expect(bodyOf(s, 'private runExhibitArg(')).toContain(
+      "track('hire_cta', { cta: 'interior' });",
+    );
+  });
+
+  test('indoors a drag or J/L turns the room camera; pinch and wheel stay drained', () => {
+    const s = stripped('main-simple.ts');
+    expect(s).toContain('const roomLook = this.inputManager.getCameraInput();');
+    expect(s).toContain('if (turn !== 0) this.scene.setInteriorLook?.(-turn);');
+  });
+});
+
+describe('wave 4 P2-A14: the mirror pose follows the shop and Customise', () => {
+  test('an equip turns it on and the shop close off; Customise releases on its div', () => {
+    const s = stripped('main-simple.ts');
+    const shop = bodyOf(s, 'private openShop(): void {');
+    const on = shop.indexOf('this.scene.getOrbitCamera().setMirrorPose(true);');
+    expect(on).toBeGreaterThan(shop.indexOf("track('hat_equipped', { hat: id });"));
+    expect(shop).toContain('this.scene.getOrbitCamera().setMirrorPose(false);');
+    expect(bodyOf(s, 'private openCustomize(): void {')).toContain('this.customizeMirror = true;');
+    expect(s).toContain("if (this.customizeMirror && !this.ui['customizeDiv']) {");
+    expect(s).not.toMatch(/ds:modal[^\n]*setMirrorPose/);
+  });
+});
+
+describe('wave 4 MOT-06: the tour turns the camera continuously', () => {
+  test('the flight slerps the orientation, carried round the planet, with no lookAt', () => {
+    const upd = bodyOf(stripped('main-simple.ts'), 'private updateTour(');
+    const fly = upd.slice(
+      upd.indexOf('const k = Math.min(1, tour.t / tour.legS);'),
+      upd.indexOf('} else {'),
+    );
+    expect(fly).toContain('this.tourStopQuat(this._tourToQuat, stop);');
+    expect(fly).toContain('this._tourArcQ.setFromUnitVectors(tour.fromDir, stop.dir)');
+    // the turn runs on its own ease (peak slope 1.11, not the sine's 1.57)
+    expect(fly).toContain(
+      'const want = this.tourFlightQuat(this._tourSampleQ, tour.fromQuat, arc, easeTourTurn(k));',
+    );
+    // no frame turns more than 1.8 deg; the leg lands once the camera is on the rail
+    expect(fly).toContain('cam.quaternion.rotateTowards(want, TOUR_TURN_MAX_STEP_RAD);');
+    expect(fly).toContain(
+      'if (k >= 1 && cam.quaternion.angleTo(want) < 1e-4) this.landTourStop();',
+    );
+    const f = bodyOf(stripped('main-simple.ts'), 'private tourFlightQuat(');
+    expect(f).toContain('out.slerpQuaternions(from, this._tourToQuat, e);');
+    expect(f).toContain('out.premultiply(this._tourCarryQ.identity().slerp(arc, e));');
+    // lookAt is undefined straight down: the view passed the nadir on two legs
+    expect(fly).not.toContain('cam.lookAt(');
+    // the dwell's pose is the one the leg lands on: same eye, target and up
+    const dwell = upd.slice(upd.indexOf('} else {'));
+    expect(dwell).toContain('const up = this._tourUp.copy(stop.look).normalize();');
+    expect(dwell).toContain('cam.lookAt(stop.look);');
+    const q = bodyOf(stripped('main-simple.ts'), 'private tourStopQuat(');
+    expect(q).toContain('this._tourLook.copy(stop.dir).multiplyScalar(stop.r)');
+    expect(q).toContain('this._tourViewB.copy(stop.look).normalize()');
+    expect(q).toContain('this._tourMat.lookAt(eye, stop.look, up);');
+  });
+
+  test('each leg is long enough that its sampled turn peaks under 80 deg/s', () => {
+    const d = bodyOf(stripped('main-simple.ts'), 'private legDuration(');
+    expect(d).toContain(
+      'this.tourFlightQuat(this._tourSampleQ, tour.fromQuat, arc, i / TOUR_TURN_SAMPLES)',
+    );
+    expect(d).toContain('tourTurnFloor(maxDegPerE)');
+  });
+
+  test('each leg leaves from the camera it has (no step at advanceTourStop or startTour)', () => {
+    expect(bodyOf(stripped('main-simple.ts'), 'private advanceTourStop(')).toContain(
+      'tour.fromQuat.copy(cam.quaternion);',
+    );
+    expect(bodyOf(stripped('main-simple.ts'), 'private startTour(')).toContain(
+      'fromQuat: cam.quaternion.clone(),',
+    );
+  });
+});
+
+describe('wave 4 bundle carry-over: Chat is its own chunk (droppable)', () => {
+  test('main-simple imports Chat as a type and builds it from import()', () => {
+    const m = stripped('main-simple.ts');
+    expect(m).toContain("import type { Chat } from './Chat';");
+    expect(m).not.toMatch(/import\s*\{[^}]*\}\s*from\s*'\.\/Chat'/);
+    const init = bodyOf(m, 'private async init(');
+    const start = init.indexOf("import('./Chat')");
+    expect(start).toBeGreaterThan(init.indexOf("import('./Multiplayer')"));
+    expect(start).toBeLessThan(init.indexOf('new GameScene()'));
+    expect(init.slice(start, start + 200)).toContain('.catch(');
+    const built = init.indexOf('new chatMod.Chat(multiplayer)');
+    expect(built).toBeGreaterThan(
+      init.indexOf('const chatMod = multiplayer ? await chatModule : null;'),
+    );
+  });
+
+  test("the local proximity radius is Chat.ts's PROXIMITY_RADIUS", () => {
+    const m = stripped('main-simple.ts');
+    const f = /const CHAT_PROXIMITY_RADIUS = ([\d.]+) \* WORLD_RADIUS;/.exec(m);
+    expect(f).not.toBeNull();
+    expect(Number(f![1]) * WORLD_RADIUS).toBe(PROXIMITY_RADIUS);
+    expect(Number(f![1])).toBe(PROXIMITY_FRACTION);
+    expect(m).toContain('nearestPeerDistance() < CHAT_PROXIMITY_RADIUS');
   });
 });

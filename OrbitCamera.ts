@@ -1079,6 +1079,7 @@ export class OrbitCamera {
     // + deltaYaw turns the view right: the follow direction turns clockwise
     // about up, which is negative in this file's (three.js) convention.
     this.yawTarget -= dYaw;
+    this.mirrorSaved = null; // a manual look cancels the mirror pose (P2-A14)
     this.pitchTarget = Math.max(
       this.minPitch,
       Math.min(this.maxPitch, this.pitchTarget + dPitch * OrbitCamera.PITCH_SCALE),
@@ -1100,6 +1101,7 @@ export class OrbitCamera {
     if (this.flyingIn || (turn === 0 && tilt === 0) || !(dt > 0)) return;
     const step = Math.min(dt, 0.1);
     this.yawTarget -= turn * OrbitCamera.KEY_TURN_RATE * step;
+    this.mirrorSaved = null;
     this.pitchTarget = Math.max(
       this.minPitch,
       Math.min(this.maxPitch, this.pitchTarget + tilt * OrbitCamera.KEY_TILT_RATE * step),
@@ -1124,6 +1126,7 @@ export class OrbitCamera {
     if (fx?.lookFling === false) return;
     this.yawVelocity = -rate;
     this.flingLeft = OrbitCamera.FLING_CAP;
+    this.mirrorSaved = null;
     this.sinceManualLook = 0;
     this.reducedRecentrePending = false; // a manual look wins over the recentre
   }
@@ -1145,6 +1148,7 @@ export class OrbitCamera {
     // Aim the TARGET so the camera ends behind, whatever was still pending.
     this.yawTarget = this.yawApplied + angle;
     this.pitchTarget = OrbitCamera.DEFAULT_PITCH;
+    this.mirrorSaved = null;
     this.yawVelocity = 0;
     this.flingLeft = 0;
     this.sinceManualLook = 0;
@@ -1158,6 +1162,68 @@ export class OrbitCamera {
       this.lookTau = OrbitCamera.RECENTRE_TAU;
     }
   }
+
+  /**
+   * The mirror pose (P2-A14): while a hat is tried on or Customise is open,
+   * the camera comes round to the avatar's front three-quarter, so the
+   * visitor sees what they changed. On: the follow yaw is saved and the yaw
+   * target turns until the camera sits MIRROR_SIDE off the facing, eased
+   * over about 0.6 s. Off: back to the saved yaw. A manual look (drag,
+   * keys, fling, R, setYaw) cancels it in place: off then leaves the view
+   * where the visitor put it. Reduced motion cuts both ways. The collision
+   * rays (A12) stay on, as for any yaw.
+   */
+  public setMirrorPose(on: boolean): void {
+    if (this.flyingIn || !this.followDir) return;
+    if (!on) {
+      const saved = this.mirrorSaved;
+      this.mirrorSaved = null;
+      if (saved === null) return;
+      this.turnYawTo(saved);
+      return;
+    }
+    if (this.mirrorSaved !== null) return; // already held
+    const n = this.player.getSurfaceNormalInto(this._rcNormal);
+    const want = this.player.getWorldDirection(this._rcFacing);
+    want.addScaledVector(n, -want.dot(n));
+    if (want.lengthSq() < 1e-8) return;
+    // The camera's side of the player: the facing, turned MIRROR_SIDE.
+    want.normalize().applyAxisAngle(n, OrbitCamera.MIRROR_SIDE);
+    const fd = this._rcFollow.copy(this.followDir).addScaledVector(n, -this.followDir.dot(n));
+    if (fd.lengthSq() < 1e-8) return;
+    fd.normalize();
+    const angle = Math.atan2(this._rcCross.copy(fd).cross(want).dot(n), fd.dot(want));
+    const saved = this.yawTarget;
+    this.turnYawTo(this.yawApplied + angle);
+    this.mirrorSaved = saved;
+  }
+
+  /** The mirror pose is held (P2-A14; probe hook). */
+  public isMirrorPose(): boolean {
+    return this.mirrorSaved !== null;
+  }
+
+  /** Ease (or, under reduced motion, cut) the yaw to `yaw`. Not a manual look. */
+  private turnYawTo(yaw: number): void {
+    this.yawTarget = yaw;
+    this.yawVelocity = 0;
+    this.flingLeft = 0;
+    this.reducedRecentrePending = false; // the pose, not a recentre, owns the yaw
+    if (a11y.reducedMotion) {
+      this.yawStepPending += this.yawTarget - this.yawApplied;
+      this.yawApplied = this.yawTarget;
+      this.snapToPlayer();
+    } else {
+      this.lookTau = OrbitCamera.MIRROR_TAU;
+    }
+  }
+
+  /** The mirror pose's camera side: 30° off the facing, a front three-quarter. */
+  private static readonly MIRROR_SIDE = Math.PI / 6;
+  /** 0.15 s: 98% of the turn lands in 0.6 s. */
+  private static readonly MIRROR_TAU = 0.15;
+  /** The yaw target saved by setMirrorPose(true); null when not held. */
+  private mirrorSaved: number | null = null;
 
   /**
    * Set orbit distance from player
@@ -1245,6 +1311,7 @@ export class OrbitCamera {
     this.yawVelocity = 0;
     this.flingLeft = 0;
     this.sinceManualLook = 0;
+    this.mirrorSaved = null;
     this.reducedRecentrePending = false; // a manual look wins over the recentre
     this.snapToPlayer();
   }

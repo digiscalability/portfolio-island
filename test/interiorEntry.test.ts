@@ -24,6 +24,7 @@ type Fn = (...a: unknown[]) => unknown;
 let enterBuilding: Fn;
 let exitBuilding: Fn;
 let onInteriorEscape: Fn;
+let openHallPanel: Fn;
 
 beforeAll(async () => {
   (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
@@ -32,6 +33,7 @@ beforeAll(async () => {
   enterBuilding = proto.enterBuilding;
   exitBuilding = proto.exitBuilding;
   onInteriorEscape = proto.onInteriorEscape;
+  openHallPanel = proto.openHallPanel;
 }, 120000);
 
 /** The app's fields enterBuilding reads, with SimpleUI.fadeThrough's own guard. */
@@ -62,8 +64,13 @@ function stubApp(showZonePanel: Fn) {
     scene,
     inputManager,
     markDone: vi.fn(),
+    touchCopy: () => false,
     insideZone: null,
     insideIsZone: false,
+    // P2-A9: the hall's panel opens through openHallPanel, which pays the
+    // stamp it lands at once (payStamps is the economy test's to drive).
+    payStamps: vi.fn(() => calls.push('payStamps')),
+    openHallPanel: (...a: unknown[]) => openHallPanel.call(app, ...a),
   };
   return { app, ui, calls, inputManager };
 }
@@ -77,6 +84,8 @@ describe('enterBuilding (P2-A2)', () => {
     enterBuilding.call(app, 'contact', true, { id: 'contact', name: 'Get In Touch' });
     expect(ui.showLeaveButton).toHaveBeenCalledTimes(1);
     expect(ui.showZonePanel).toHaveBeenCalledTimes(1);
+    // A stamp that landed before the panel threw is still paid (P2-A9).
+    expect(app.payStamps).toHaveBeenCalledTimes(1);
     // The panel's error is logged where it happens, not swallowed by the fade.
     expect(calls).not.toContain('fadeThrough swallowed an error');
     expect(warn).toHaveBeenCalled();
@@ -86,7 +95,7 @@ describe('enterBuilding (P2-A2)', () => {
   test('Leave comes before the panel, and the panel still opens', () => {
     const { app, calls } = stubApp(() => undefined);
     enterBuilding.call(app, 'projects', true, { id: 'projects', name: 'Project Portfolio' });
-    expect(calls).toEqual(['enterInterior', 'showLeaveButton', 'showZonePanel']);
+    expect(calls).toEqual(['enterInterior', 'showLeaveButton', 'showZonePanel', 'payStamps']);
   });
 
   test('a cottage gets Leave and no panel', () => {
@@ -297,5 +306,121 @@ describe('the capture-phase Escape rule (P2-A1)', () => {
     on(document, (e) => void onInteriorEscape.call(r.app, e as KeyboardEvent), false);
     document.body.dispatchEvent(escape());
     expect(r.ui.fadeThrough).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- P2-A11: hall exhibits say something and act on E ----------------------
+describe('P2-A11: exhibits, their hotspot actions and the Leave label', () => {
+  type M = (this: unknown, ...a: unknown[]) => unknown;
+  let p: Record<string, M>;
+  let EX: Record<string, { left?: { lines: string[] }; right?: unknown; screen?: unknown }>;
+  let exFor: (id: string, touch: boolean) => unknown;
+  beforeAll(async () => {
+    const mod = await import('../main-simple');
+    p = mod.SimpleApp.prototype as unknown as Record<string, M>;
+    EX = (mod.SimpleApp as unknown as { INTERIOR_EXHIBITS: typeof EX }).INTERIOR_EXHIBITS;
+    exFor = mod.SimpleApp.interiorExhibits;
+  }, 120000);
+
+  const app = () => {
+    const ui = {
+      showHireCard: vi.fn(),
+      showZonePanel: vi.fn(),
+      flashMessage: vi.fn(),
+      showIslandTimes: vi.fn(async () => undefined),
+    };
+    const zones = [
+      { id: 'professional', pos: { d: 0 } },
+      { id: 'projects', pos: { d: 100 } },
+      { id: 'contact', pos: { d: 4 } },
+      { id: 'personal', pos: { d: 9 } },
+    ];
+    const stamped = new Set(['professional']);
+    const a: Record<string, unknown> = {
+      ui,
+      insideZone: { id: 'welcome', name: 'Welcome' },
+      zoneList: zones,
+      zonePos: () => ({ distanceToSquared: (q: { d: number }) => q.d }),
+      passport: { isStampZone: () => true, has: (id: string) => stamped.has(id) },
+    };
+    a.runExhibitArg = p.runExhibitArg.bind(a);
+    return { a, ui };
+  };
+
+  test("'hire' opens the hire card; 'project:<id>' opens Projects at that card, never stamping", () => {
+    const { a, ui } = app();
+    expect(p.runInteriorAction.call(a, { action: 'panel', arg: 'hire' })).toBeUndefined();
+    expect(ui.showHireCard).toHaveBeenCalledWith('cta');
+    p.runInteriorAction.call(a, { action: 'panel', arg: 'project:banos' });
+    expect(ui.showZonePanel).toHaveBeenLastCalledWith(
+      { id: 'projects', name: 'projects' },
+      { source: 'landmark', anchor: 'banos' },
+    );
+    p.runInteriorAction.call(a, { action: 'panel', arg: 'project' });
+    expect(ui.showZonePanel).toHaveBeenLastCalledWith(
+      { id: 'projects', name: 'projects' },
+      { source: 'landmark' },
+    );
+  });
+
+  test("'compass' sets the nearest unstamped district through 'ds:guide-to'", () => {
+    const { a } = app();
+    const seen: unknown[] = [];
+    const on = (e: Event) => seen.push((e as CustomEvent).detail);
+    window.addEventListener('ds:guide-to', on);
+    p.runInteriorAction.call(a, { action: 'panel', arg: 'compass' });
+    window.removeEventListener('ds:guide-to', on);
+    expect(seen).toEqual([{ key: 'district:contact', source: 'interior' }]);
+  });
+
+  test("'copy:email' with no clipboard opens Contact at its form", () => {
+    const { a, ui } = app();
+    const nav = navigator as unknown as { clipboard?: unknown };
+    const had = Object.getOwnPropertyDescriptor(nav, 'clipboard');
+    Object.defineProperty(nav, 'clipboard', { value: undefined, configurable: true });
+    try {
+      p.runInteriorAction.call(a, { action: 'panel', arg: 'copy:email' });
+    } finally {
+      if (had) Object.defineProperty(nav, 'clipboard', had);
+    }
+    expect(ui.showZonePanel).toHaveBeenCalledWith(
+      { id: 'contact', name: 'contact' },
+      { source: 'landmark', anchor: 'lead-form-block' },
+    );
+  });
+
+  test('the copy: five halls, no agents, no grandmother, no studio; four pegboard ids', () => {
+    expect(Object.keys(EX).sort()).toEqual([
+      'contact',
+      'personal',
+      'professional',
+      'projects',
+      'welcome',
+    ]);
+    const text = JSON.stringify(EX);
+    expect(text).not.toMatch(/\bagents?\b|grandmother|studio|live AI/i);
+    expect(text).toContain('founder & lead developer, DigiScalability');
+    expect(text).toContain('Ammi');
+    expect(text).toContain('open source (MIT)');
+    expect(text).toContain('admin@digiscalability.com');
+    const ids = [...text.matchAll(/"id":"([a-z]+)"/g)].map((m) => m[1]);
+    expect(ids).toEqual(['rankpilot', 'chocomate', 'banos', 'insta']);
+  });
+
+  test('the posters name the key the visitor has: E on a keyboard, USE on touch', () => {
+    for (const id of Object.keys(EX)) {
+      const touch = JSON.stringify(exFor(id, true));
+      const keys = JSON.stringify(exFor(id, false));
+      expect(touch).not.toMatch(/\bE\b|\{use\}/i);
+      expect(keys).not.toMatch(/\bUSE\b|\{use\}/);
+      // the pegboard chips (and their ids) survive the rewrite
+      expect(JSON.stringify(exFor(id, true)).match(/"id"/g)?.length ?? 0).toBe(
+        JSON.stringify(EX[id]).match(/"id"/g)?.length ?? 0,
+      );
+    }
+    expect(JSON.stringify(exFor('projects', true))).toContain('Tap USE at a card');
+    expect(JSON.stringify(exFor('projects', false))).toContain('Press E at a card');
+    expect(JSON.stringify(exFor('welcome', true))).toContain('tap USE to set the compass');
+    expect(exFor('nowhere', true)).toBeUndefined();
   });
 });

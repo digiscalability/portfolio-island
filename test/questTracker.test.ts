@@ -176,6 +176,60 @@ describe('NpcQuests.getActiveQuests: accepted quests with where they stand', () 
   });
 });
 
+describe('P2-A10: the Gardener counts meadow pickups, not held coins', () => {
+  test('accept, spend 3, pick up 5 meadow coins: complete; a +10 lesson and trail coins add nothing', () => {
+    const q = new NpcQuestSystem();
+    q.useMeadowCounter();
+    expect(q.onTalk('Gardener', 10)?.accepted?.id).toBe('gardener_coins');
+    // spend 3 at the shop: held coins fall to 7, progress stays 0
+    expect(q.getActiveQuests(7)[0].progress).toBe('0/5');
+    // a +10 lesson: held coins jump, progress does not
+    expect(q.getActiveQuests(17)[0].progress).toBe('0/5');
+    expect(q.talkKind('Gardener', 17)).toBe('status');
+    // trail coins never count
+    for (let i = 0; i < 5; i++) q.onMeadowCoin({ trail: true });
+    expect(q.getActiveQuests(22)[0].progress).toBe('0/5');
+    for (let i = 0; i < 4; i++) q.onMeadowCoin({ trail: false });
+    expect(q.getActiveQuests(0)[0].progress).toBe('4/5');
+    expect(q.onTalk('Gardener', 0)?.completed).toBeUndefined();
+    q.onMeadowCoin({ trail: false });
+    expect(q.talkKind('Gardener', 0)).toBe('errand');
+    expect(q.onTalk('Gardener', 0)?.completed?.id).toBe('gardener_coins');
+  });
+
+  test('pickups before the accept do not count, and the counter survives a reload', () => {
+    const q = new NpcQuestSystem();
+    q.onMeadowCoin({ trail: false });
+    q.onTalk('Gardener', 1);
+    q.onMeadowCoin({ trail: false });
+    q.onMeadowCoin({ trail: false });
+    const r = new NpcQuestSystem();
+    r.useMeadowCounter();
+    expect(r.getActiveQuests(99)[0].progress).toBe('2/5');
+  });
+
+  test('an active quest in an old save (no meadowCoins) restarts at 0', () => {
+    localStorage.setItem(
+      'ds_npc_quests',
+      JSON.stringify({ gardener_coins: { state: 'active', coinBaseline: 0 } }),
+    );
+    const q = new NpcQuestSystem();
+    q.useMeadowCounter();
+    expect(q.getActiveQuests(40)[0].progress).toBe('0/5');
+    q.onMeadowCoin({ trail: false });
+    expect(q.getActiveQuests(40)[0].progress).toBe('1/5');
+    // coinBaseline stays in the save shape for one release
+    const saved = JSON.parse(localStorage.getItem('ds_npc_quests') ?? '{}');
+    expect(saved.gardener_coins).toMatchObject({ coinBaseline: 0, meadowCoins: 1 });
+  });
+
+  test('without the scene feed, the held-coins arithmetic as before', () => {
+    const q = new NpcQuestSystem();
+    q.onTalk('Gardener', 3);
+    expect(q.getActiveQuests(8)[0].progress).toBe('5/5');
+  });
+});
+
 // ---- main-simple: the talk handler and the race finish ----------------------
 
 type Fn = (this: unknown, ...a: unknown[]) => unknown;
@@ -546,6 +600,7 @@ describe('main-simple: run intent, first-use hint gates and heel-strike footfall
   test('a first-use hint waits while any panel, card, interior, tour, talk, guide or Next list is up', () => {
     const quietWith = (o: Partial<Record<string, boolean>>): boolean =>
       proto.hintsQuiet.call({
+        racing: !!o.racing,
         ui: { panels: { isOpen: () => !!o.panel }, isWelcomeVisible: () => !!o.welcome },
         scene: { isInsideInterior: () => !!o.interior },
         tour: o.tour ? {} : null,
@@ -554,8 +609,218 @@ describe('main-simple: run intent, first-use hint gates and heel-strike footfall
         nextChip: { isExpanded: () => !!o.next },
       }) as boolean;
     expect(quietWith({})).toBe(false);
-    for (const gate of ['panel', 'welcome', 'interior', 'tour', 'talk', 'guide', 'next']) {
+    for (const gate of [
+      'racing',
+      'panel',
+      'welcome',
+      'interior',
+      'tour',
+      'talk',
+      'guide',
+      'next',
+    ]) {
       expect(quietWith({ [gate]: true }), gate).toBe(true);
     }
+  });
+});
+
+// ---- P2-A9: learning about Abbas pays, and the School teaches by doing ------
+describe('main-simple: the first-visit economy (P2-A9)', () => {
+  type M = (this: unknown, ...a: unknown[]) => unknown;
+  let p: Record<string, M>;
+  let LESSONS: Array<[string, string]> = [];
+  let S: Record<string, number>;
+  beforeAll(async () => {
+    (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
+    const mod = await import('../main-simple');
+    p = mod.SimpleApp.prototype as unknown as Record<string, M>;
+    S = mod.SimpleApp as unknown as Record<string, number>;
+    LESSONS = (mod.SimpleApp as unknown as { LESSONS: Array<[string, string]> }).LESSONS;
+  }, 120000);
+
+  /** A stub app wired with the real pay methods; coins and tracks are recorded. */
+  const stub = (o: { stamps?: number; touch?: boolean } = {}) => {
+    const log: Array<[string, number]> = [];
+    const events: Array<[string, unknown]> = [];
+    let coins = 0;
+    const app: Record<string, unknown> = {
+      lessons: [] as string[],
+      lessonActs: new Set<string>(),
+      schoolEnrolled: false,
+      stampsPaid: -1,
+      ownedRod: false,
+      ownedAxe: false,
+      passport: { count: () => o.stamps ?? 0 },
+      scene: {
+        addCoins: (n: number) => (coins += n),
+        floatCoinsAtPlayer: () => undefined,
+        logTransaction: (why: string, n: number) => log.push([why, n]),
+        getCoinsCollected: () => coins,
+      },
+      ui: {
+        updateCoinCounter: () => undefined,
+        toast: () => undefined,
+        isTouchDevice: () => !!o.touch,
+        showLessons: vi.fn(),
+      },
+      persistLessons: () => undefined,
+    };
+    for (const k of [
+      'payCoins',
+      'payStamps',
+      'persistStampsPaid',
+      'openSchool',
+      'learnLesson',
+      'noteLessonAct',
+      'payLesson',
+      'lessonTitle',
+      'lessonGuideKey',
+      'lessonCopy',
+    ]) {
+      app[k] = p[k].bind(app);
+    }
+    return { app, log, events, coins: () => coins };
+  };
+
+  test('the first-visit sum: trail 5 + four stamps x 5 = 25 (the tour bar)', () => {
+    expect(S.STAMP_PAY).toBe(5);
+    const trail = 5; // ARRIVAL_TRAIL coins: the five-coin breadcrumb trail
+    const stamps = 4;
+    expect(trail + stamps * S.STAMP_PAY).toBe(25);
+    // and the Explorer Cap costs what the trail pays
+    const src = readFileSync(join(process.cwd(), 'main-simple.ts'), 'utf8');
+    expect(src).toContain("{ id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 5 }");
+  });
+
+  test('stamps pay +5 each from the first record; a returning visitor gets no back-pay', () => {
+    const s = stub({ stamps: 2 });
+    s.app.payStamps();
+    expect(s.coins()).toBe(0); // no record: it starts at today's count
+    expect(localStorage.getItem('ds_stamp_paid')).toBe('2');
+    (s.app.passport as { count: () => number }).count = () => 4;
+    s.app.payStamps();
+    expect(s.coins()).toBe(10);
+    expect(s.log).toEqual([['Passport stamp', 10]]);
+    s.app.payStamps();
+    expect(s.coins()).toBe(10);
+    // a fresh page reads the record
+    const t = stub({ stamps: 5 });
+    t.app.payStamps();
+    expect(t.coins()).toBe(5);
+  });
+
+  test('a hall stamp pays at the stamp, and the fourth before the completion card', () => {
+    // Integration probe (p2/tour, w4-int): coins 1, 7, 15, 21 at the four
+    // stops; each +5 waited for refreshCompletion's 2.5 s cadence, so the
+    // last landed after the 'Portfolio complete' card read 'Coins earned 21'.
+    const s = stub();
+    let stamps = 0;
+    let onComplete: (() => void) | null = null;
+    const cardCoins: number[] = [];
+    s.app.passport = { count: () => stamps };
+    s.app.payStamps(); // boot: the record starts at 0
+    Object.assign(s.app, {
+      ownedHats: new Set<string>(),
+      equippedHat: null,
+      goalsWereOn: false,
+      multiplayer: null,
+      syncGoals: () => undefined,
+      publishGoals: () => undefined,
+      openHallPanel: p.openHallPanel.bind(s.app),
+      grantPassportReward: p.grantPassportReward.bind(s.app),
+    });
+    Object.assign(s.app.scene as object, { equipPlayerHat: () => undefined });
+    onComplete = s.app.grantPassportReward as () => void;
+    Object.assign(s.app.ui as object, {
+      // SimpleUI.showZonePanel: a 'proximity' open stamps the passport, and the
+      // last stamp fires onComplete inside the call.
+      showZonePanel: (_z: unknown, o: { source: string }) => {
+        if (o.source !== 'proximity') return;
+        stamps += 1;
+        if (stamps === 4) onComplete?.();
+      },
+      showPassportComplete: () => cardCoins.push(s.coins()),
+    });
+    const after: number[] = [];
+    for (const id of ['professional', 'projects', 'personal', 'contact']) {
+      (s.app.openHallPanel as (z: { id: string; name: string }) => void)({ id, name: id });
+      after.push(s.coins());
+    }
+    expect(after).toEqual([5, 10, 15, 20]);
+    expect(cardCoins).toEqual([20]);
+    // the cadence that follows pays nothing twice
+    s.app.payStamps();
+    expect(s.coins()).toBe(20);
+    // a panel that throws still pays the stamp it landed
+    (s.app.ui as { showZonePanel: unknown }).showZonePanel = () => {
+      stamps += 1;
+      throw new Error('panel');
+    };
+    expect(() =>
+      (s.app.openHallPanel as (z: { id: string; name: string }) => void)({ id: 'x', name: 'x' }),
+    ).toThrow('panel');
+    expect(s.coins()).toBe(25);
+  });
+
+  test('six School presses pay exactly +10 on a fresh visitor; a first cast then pays +10', () => {
+    const s = stub();
+    for (let i = 0; i < 6; i++) s.app.openSchool();
+    expect(s.coins()).toBe(10);
+    expect(s.app.lessons).toEqual(['move']);
+    expect(localStorage.getItem('ds_school_enrolled')).toBe('1');
+    s.app.learnLesson('fish');
+    expect(s.coins()).toBe(20);
+    s.app.learnLesson('fish');
+    expect(s.coins()).toBe(20);
+    expect(s.log.every(([why, n]) => why === 'School lesson' && n === 10)).toBe(true);
+  });
+
+  test('actions before enrolment are paid once at enrolment, not before', () => {
+    const s = stub();
+    s.app.learnLesson('feed');
+    s.app.learnLesson('chop');
+    expect(s.coins()).toBe(0);
+    s.app.openSchool();
+    expect(s.coins()).toBe(30); // move, chop, feed
+    s.app.openSchool();
+    expect(s.coins()).toBe(30);
+  });
+
+  test("an old save's lessons count as done and are not paid again", () => {
+    const s = stub();
+    s.app.lessons = ['move', 'fish'];
+    s.app.openSchool();
+    s.app.learnLesson('fish');
+    expect(s.coins()).toBe(0);
+  });
+
+  test('the card: six rows, Show me keys as amended, touch titles with no keys', () => {
+    const s = stub({ touch: true });
+    s.app.openSchool();
+    const rows = (s.app.ui as { showLessons: ReturnType<typeof vi.fn> }).showLessons.mock
+      .calls[0][0] as Array<{ id: string; title: string; done: boolean; guideKey?: string }>;
+    expect(rows.map((r) => r.id)).toEqual(LESSONS.map(([id]) => id));
+    expect(rows.map((r) => r.guideKey)).toEqual([
+      undefined,
+      'kiosk',
+      'kiosk',
+      'kiosk',
+      'villager:ai-nearest',
+      'stake:nearest',
+    ]);
+    expect(rows[0].done).toBe(true);
+    for (const r of rows) expect(r.title, r.id).not.toMatch(/\bWASD\b|\bSpace\b|\bShift\b/);
+    s.app.ownedRod = true;
+    s.app.ownedAxe = true;
+    expect(s.app.lessonGuideKey('fish')).toBe('shore');
+    expect(s.app.lessonGuideKey('chop')).toBe('carpenter');
+  });
+
+  test('lesson_learned replaces lesson_done, and deliveries pay +3', () => {
+    const src = readFileSync(join(process.cwd(), 'main-simple.ts'), 'utf8');
+    expect(src).not.toContain("track('lesson_done'");
+    expect(src).toContain("track('lesson_learned', { id, n: this.lessons.length });");
+    expect(S.DELIVERY_PAY).toBe(3);
+    expect(src).toContain("this.payCoins(SimpleApp.DELIVERY_PAY, 'Delivery');");
   });
 });

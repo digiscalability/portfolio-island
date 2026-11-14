@@ -1,23 +1,91 @@
 // Aspect-aware framing. three.js fov is the VERTICAL angle, so a fixed fov is
 // pure Hor+ with no floor — measured 24.3 deg horizontal on a portrait phone,
 // which turned the world into a corridor on half the audience's devices.
+import * as THREE from 'three';
 import { describe, expect, test } from 'vitest';
 
 import {
   BASE_VFOV,
   easeInOutSine,
+  easeTourTurn,
   framingFov,
   horizontalFov,
   renderedLength,
   tourCaption,
   tourFirstLegLift,
   tourLegDuration,
+  tourTurnFloor,
   TOUR_CAPTION_MAX,
   TOUR_DWELL_S,
   TOUR_LEG_MAX_S,
   TOUR_LEG_MIN_S,
   TOUR_PEAK_DEG_S,
+  TOUR_TURN_PEAK_DEG_S,
+  TOUR_TURN_PEAK_SLOPE,
+  pickTourBearing,
+  tourBearingCost,
+  TOUR_BEARINGS,
+  TOUR_CLUTTER_GRID,
+  TOUR_FACE_WEIGHT,
+  TOUR_VILLAGER_ALT,
+  TOUR_VILLAGER_BACK,
+  TOUR_VILLAGER_RANK_COST,
+  type TourBearing,
 } from '../Framing';
+
+// The villager stop (wave-4 play review, stop 4): a villager 11 u away, seen
+// from behind, 15% of a desktop frame tall, behind an awning, a signpost and
+// a canopy. Scratch probe A-fix/tour-frame.cjs measured the fix on the dist:
+// desktop 0.152 -> 0.283 of the frame, facing -0.14 -> 0.98, clutter 0.
+describe('the tour villager stop', () => {
+  const b = (turn: number, clutter: number, facing: number, headClear = true): TourBearing => ({
+    turn,
+    headClear,
+    clutter,
+    facing,
+  });
+
+  test('the camera is close enough that a 1.8 u villager fills about a quarter of a desktop frame', () => {
+    const d = Math.hypot(TOUR_VILLAGER_ALT, TOUR_VILLAGER_BACK);
+    const frameH = 2 * d * Math.tan(THREE.MathUtils.degToRad(BASE_VFOV) / 2);
+    expect(1.8 / frameH).toBeGreaterThan(0.25);
+    expect(1.8 / frameH).toBeLessThan(0.4);
+  });
+
+  test('bearings go all the way round, and the grid covers the lower frame', () => {
+    expect(TOUR_BEARINGS).toBeGreaterThanOrEqual(8);
+    expect(Math.min(...TOUR_CLUTTER_GRID.map(([, y]) => y))).toBeLessThanOrEqual(-0.8);
+    expect(Math.max(...TOUR_CLUTTER_GRID.map(([x]) => Math.abs(x)))).toBeGreaterThanOrEqual(0.9);
+  });
+
+  test('a head that cannot be seen never wins; all blocked is null', () => {
+    expect(pickTourBearing([b(0, 0, 1, false), b(1, 0.5, -1)])?.turn).toBe(1);
+    expect(pickTourBearing([b(0, 0, 1, false)])).toBeNull();
+    expect(pickTourBearing([])).toBeNull();
+  });
+
+  test('the review frame (cluttered, from behind) loses to a clear face-on one', () => {
+    const review = b(0, 0.22, -0.2);
+    const faceOn = b(2, 0, 0.98);
+    expect(pickTourBearing([review, faceOn])?.turn).toBe(2);
+    // a back view costs TOUR_FACE_WEIGHT, a face-on one nothing
+    expect(tourBearingCost(b(0, 0, -1))).toBeCloseTo(TOUR_FACE_WEIGHT);
+    expect(tourBearingCost(b(0, 0, 1))).toBe(0);
+    // a clear back view beats a face-on view through a cluttered frame
+    expect(pickTourBearing([b(0, 0.6, 1), b(1, 0, -1)])?.turn).toBe(1);
+    // ties keep the earlier bearing
+    expect(pickTourBearing([b(0, 0.1, 0), b(1, 0.1, 0)])?.turn).toBe(0);
+  });
+
+  test('a later villager wins only on a clearly better frame', () => {
+    // the preferred villager's back view against the next one's face-on view
+    expect(tourBearingCost(b(0, 0, -1))).toBeGreaterThan(
+      tourBearingCost(b(0, 0, 1)) + 3 * TOUR_VILLAGER_RANK_COST,
+    );
+    // a near-tie stays with the preferred villager
+    expect(TOUR_VILLAGER_RANK_COST).toBeGreaterThan(0);
+  });
+});
 
 const ASPECTS = {
   portraitPhone: 393 / 852,
@@ -131,5 +199,115 @@ describe('A9: the tour rail paces itself', () => {
     expect(renderedLength(tourCaption(2, 6, pro))).toBe(110);
     expect(TOUR_CAPTION_MAX).toBe(110);
     expect(tourCaption(1, 4, 'x')).toBe('Stop 1 of 4 · x');
+  });
+});
+
+// MOT-06 (wave 4): the tour's flight, as main-simple's updateTour composes it.
+// The old flight slerped the VIEW direction and rebuilt the camera with
+// lookAt(up = radial); where the view passed within 2 deg of straight down
+// (leg 1, measured 178.1 deg from the radial) lookAt's yaw is undefined and
+// the camera spun 9-12 deg in a frame. The orientation slerp has no such pole.
+describe('MOT-06: the tour flight turns at most the leg turn under the ease', () => {
+  const R = 100;
+  const pose = (eye: THREE.Vector3, target: THREE.Vector3) =>
+    new THREE.Quaternion().setFromRotationMatrix(
+      new THREE.Matrix4().lookAt(eye, target, target.clone().normalize()),
+    );
+  // A leg like leg 1: a high look-down over one spot, then a stop 64 deg on,
+  // the view swinging through the nadir on the way.
+  const fromDir = new THREE.Vector3(0, 1, 0);
+  const fromEye = fromDir.clone().multiplyScalar(R + 25);
+  const fromLook = new THREE.Vector3(0.12, 1, -0.02).normalize().multiplyScalar(R);
+  const toDir = new THREE.Vector3(Math.sin(1.12), Math.cos(1.12), 0).normalize();
+  const toLook = new THREE.Vector3(Math.sin(1.0), Math.cos(1.0), 0.05)
+    .normalize()
+    .multiplyScalar(R);
+  const fromQ = pose(fromEye, fromLook);
+  const toQ = pose(toDir.clone().multiplyScalar(R + 12), toLook);
+  const N = 201; // a 3.35 s leg at 60 fps
+
+  function flight(e: number): THREE.Quaternion {
+    const arc = new THREE.Quaternion().setFromUnitVectors(fromDir, toDir);
+    const local = toQ.clone().premultiply(arc.clone().invert());
+    const q = new THREE.Quaternion().slerpQuaternions(fromQ, local, e);
+    return q.premultiply(new THREE.Quaternion().slerp(arc, e));
+  }
+  const steps = (f: (e: number) => THREE.Quaternion, ease = easeTourTurn) => {
+    const out: number[] = [];
+    let prev = f(0);
+    for (let i = 1; i < N; i++) {
+      const q = f(ease(i / (N - 1)));
+      out.push(THREE.MathUtils.radToDeg(prev.angleTo(q)));
+      prev = q;
+    }
+    return out;
+  };
+
+  test('both ends are the poses themselves (continuous seams)', () => {
+    expect(flight(0).angleTo(fromQ)).toBeLessThan(1e-6);
+    expect(flight(1).angleTo(toQ)).toBeLessThan(1e-6);
+  });
+
+  test('no frame turns more than 2 deg at 60 fps, where lookAt spun', () => {
+    const s = steps(flight);
+    expect(Math.max(...s)).toBeLessThan(2);
+    // the old composition on the same leg: a view slerp through the nadir
+    const v0 = fromLook.clone().sub(fromEye).normalize();
+    const toEye = toDir.clone().multiplyScalar(R + 12);
+    const v1 = toLook.clone().sub(toEye).normalize();
+    const old = (e: number) => {
+      const eye = new THREE.Vector3()
+        .copy(fromDir)
+        .lerp(toDir, e)
+        .normalize()
+        .multiplyScalar(R + 20);
+      const v = new THREE.Vector3()
+        .copy(v0)
+        .applyQuaternion(
+          new THREE.Quaternion().slerp(new THREE.Quaternion().setFromUnitVectors(v0, v1), e),
+        );
+      return new THREE.Quaternion().setFromRotationMatrix(
+        new THREE.Matrix4().lookAt(eye, eye.clone().add(v), eye.clone().normalize()),
+      );
+    };
+    // measured: 3.08 deg old against 1.38 new on this leg
+    expect(Math.max(...steps(old, easeInOutSine))).toBeGreaterThan(2);
+  });
+
+  test('the turn ease peaks 29% under the sine and still lands flat', () => {
+    expect(easeTourTurn(0)).toBe(0);
+    expect(easeTourTurn(1)).toBe(1);
+    expect(easeTourTurn(0.5)).toBeCloseTo(0.5, 12);
+    expect(easeTourTurn(0.005)).toBeLessThan(1e-4);
+    let peak = 0;
+    let prev = 0;
+    for (let i = 1; i <= 2000; i++) {
+      const e = easeTourTurn(i / 2000);
+      expect(e).toBeGreaterThanOrEqual(prev);
+      peak = Math.max(peak, (e - prev) * 2000);
+      prev = e;
+    }
+    expect(peak).toBeCloseTo(TOUR_TURN_PEAK_SLOPE, 3);
+    expect(TOUR_TURN_PEAK_SLOPE / (Math.PI / 2)).toBeLessThan(0.72);
+  });
+
+  test('a leg sized by tourTurnFloor turns at most 80 deg/s (1.33 deg per 16.7 ms frame)', () => {
+    let maxPerE = 0;
+    let prev = flight(0);
+    for (let i = 1; i <= 48; i++) {
+      const q = flight(i / 48);
+      maxPerE = Math.max(maxPerE, THREE.MathUtils.radToDeg(prev.angleTo(q)) * 48);
+      prev = q;
+    }
+    const T = Math.max(TOUR_LEG_MIN_S, tourTurnFloor(maxPerE));
+    const frames = Math.round(T * 60);
+    let worst = 0;
+    let p = flight(0);
+    for (let i = 1; i <= frames; i++) {
+      const q = flight(easeTourTurn(i / frames));
+      worst = Math.max(worst, THREE.MathUtils.radToDeg(p.angleTo(q)) * 60);
+      p = q;
+    }
+    expect(worst).toBeLessThanOrEqual(TOUR_TURN_PEAK_DEG_S * 1.02);
   });
 });

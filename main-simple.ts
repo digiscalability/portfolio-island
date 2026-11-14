@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { a11y } from './Accessibility';
 import { isOwnerVisit, startDwellTracking, track, trackOnce } from './Analytics';
 import { setInkVisible } from './CelLook';
-import { Chat, PROXIMITY_RADIUS } from './Chat';
+import type { Chat } from './Chat';
 import {
   compassBearing,
   compassTarget,
@@ -18,13 +18,26 @@ import { featuredSell, saleSplit, type ProviderKey } from './economy';
 import { EnvironmentCycle } from './EnvironmentCycle';
 import {
   easeInOutSine,
+  easeTourTurn,
   tourCaption,
   tourFirstLegLift,
   tourLegDuration,
+  pickTourBearing,
+  tourTurnFloor,
+  TOUR_BEARINGS,
+  TOUR_CLUTTER_GRID,
+  TOUR_CLUTTER_NEAR,
   TOUR_DWELL_S,
+  TOUR_TURN_MAX_STEP_DEG,
+  tourBearingCost,
+  TOUR_VILLAGER_ALT,
+  TOUR_VILLAGER_BACK,
+  TOUR_VILLAGER_RANK_COST,
+  TOUR_VILLAGER_TRIES,
+  type TourBearing,
 } from './Framing';
 import { fx } from './FxBudget';
-import { GameScene } from './GameScene';
+import { GameScene, type Exhibits } from './GameScene';
 import {
   Guide,
   guideCopy,
@@ -39,7 +52,7 @@ import {
   type GuideWorld,
   type RouteSource,
 } from './Guide';
-import { GuideCard } from './GuideCard';
+import type { GuideCard } from './GuideCard';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
@@ -54,7 +67,7 @@ import {
   isAiNpc,
   voiceProfileFor,
 } from './NpcChat';
-import { NpcQuestSystem } from './NpcQuests';
+import type { NpcQuestSystem } from './NpcQuests';
 import { Passport, PASSPORT_META, PASSPORT_ZONES, type PassportZone } from './Passport';
 import {
   coinAdoptValue,
@@ -70,6 +83,7 @@ import type { RaceEvent } from './RaceSystem';
 import { SECRETS, Secrets } from './Secrets';
 import { sfx } from './Sfx';
 import { decodePostcardPose } from './Share';
+import { PROJECT_BOARDS } from './SignPainter';
 import { SimpleInputManager, consumePinchZoomFactor } from './SimpleInputManager';
 import type { BodyPart, HatId } from './SimplePlayer';
 import { SimpleRenderer } from './SimpleRenderer';
@@ -77,12 +91,34 @@ import { SimpleUI } from './SimpleUI';
 import { applySoftLookFogPatch } from './SoftLook';
 import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
-import { placeBench, subscribeBenches } from './worldBenches';
 import { BUILD_KIND_IDS, placeBuild, removeBuild, subscribeBuilds } from './worldBuilds';
-import { WORLD_ERA } from './WorldScale';
+import { WORLD_ERA, WORLD_RADIUS } from './WorldScale';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
 import './style.css';
+
+/**
+ * The First steps card's module (GuideCard.ts), loaded with import() (wave 4,
+ * bundle): nothing draws the card before the welcome card closes or a deep
+ * link arms the guide, so it stays out of the main chunk. afterIntro asks for
+ * it in an idle slot while the welcome card is up; renderGuide asks again on
+ * the frame it first wants the card and draws it on the frame the module is
+ * in. A failed fetch is asked for again after 3 s, not every frame.
+ */
+type GuideCardModule = typeof import('./GuideCard');
+let guideCardModule: GuideCardModule | null = null;
+let guideCardLoad: Promise<GuideCardModule | null> | null = null;
+export function loadGuideCard(): Promise<GuideCardModule | null> {
+  guideCardLoad ??= import('./GuideCard').then(
+    (m) => (guideCardModule = m),
+    (e: unknown) => {
+      console.warn('GuideCard module failed to load:', e);
+      window.setTimeout(() => (guideCardLoad = null), 3000);
+      return null;
+    },
+  );
+  return guideCardLoad;
+}
 
 // Analytics MUST fire at module evaluation, not after the world boots: the old
 // idle-deferred inject meant every visitor who bounced during the loading
@@ -118,6 +154,25 @@ try {
 } catch {
   /* no storage — attribution is best-effort */
 }
+
+/**
+ * GameScene accessors from a package that merges after A in wave 4, read
+ * through optional calls so this branch is green on its own (P2-A8): B's
+ * nearest unoccupied vehicle of a kind, written into `out` with no allocation.
+ */
+type RaceScene = GameScene & {
+  nearestVehiclePos?: (kind: 'car' | 'boat' | 'jetski', out: THREE.Vector3) => THREE.Vector3 | null;
+};
+
+/**
+ * Chat.ts's PROXIMITY_RADIUS (0.35 x the world radius), copied so Chat.ts can
+ * be its own chunk (wave-4 bundle carry-over). test/mainLocks pins the two equal.
+ */
+const CHAT_PROXIMITY_RADIUS = 0.35 * WORLD_RADIUS;
+
+/** MOT-06: points along a leg's turn sampled once per leg to find its peak rate. */
+const TOUR_TURN_SAMPLES = 48;
+const TOUR_TURN_MAX_STEP_RAD = THREE.MathUtils.degToRad(TOUR_TURN_MAX_STEP_DEG);
 
 /** One stop on the cinematic tour rail (SimpleApp.startTour). */
 interface TourStop {
@@ -216,6 +271,16 @@ export class SimpleApp {
   private readonly districtDists: Array<{ id: string; dist: number }> = [];
   // "Beat the lap record" CTA → compass points at the start gate until a race starts
   private raceGuideTarget: THREE.Vector3 | null = null;
+  /** P2-A8: the CTA's guide leads to a parked car first, then the start. */
+  private raceGuideViaCar = false;
+  /** P2-A8: a race runs (set on 'start', cleared on 'finish' and 'abort').
+   *  While it is set, main-simple's unprompted hints wait and keep their
+   *  once-ever keys (guideHoldsHints, hintsQuiet). */
+  private racing = false;
+  /** P2-A8: the next ring, written by getRaceNextGate (no allocation). */
+  private readonly _qcRaceGate = new THREE.Vector3();
+  /** P2-A8: the nearest parked car, written by nearestVehiclePos. */
+  private readonly _qcCar = new THREE.Vector3();
 
   // Tour mode: a skippable cinematic rail over the districts for the visitor
   // who won't touch WASD (the Breton camera-rail pattern from the audit).
@@ -235,6 +300,8 @@ export class SimpleApp {
     legS: number;
     /** A9: the view direction the leg leaves on (unit). */
     fromView: THREE.Vector3;
+    /** MOT-06: the camera's orientation as the leg leaves (continuous with the frame before). */
+    fromQuat: THREE.Quaternion;
   } | null = null;
   /** afterIntro has run: the welcome card, if any, is up or already closed. */
   private introSettled = false;
@@ -247,8 +314,16 @@ export class SimpleApp {
   private readonly _tourViewB = new THREE.Vector3();
   private readonly _tourAxis = new THREE.Vector3();
   private readonly _tourQ = new THREE.Quaternion();
+  private readonly _tourToQuat = new THREE.Quaternion();
+  private readonly _tourArcQ = new THREE.Quaternion();
+  private readonly _tourMat = new THREE.Matrix4();
+  private readonly _tourCarryQ = new THREE.Quaternion();
+  private readonly _tourPrevQ = new THREE.Quaternion();
+  private readonly _tourSampleQ = new THREE.Quaternion();
   // Villager line-of-sight probe (firstHitOnly: the terrain's BVH fast path)
   private readonly _tourRay = Object.assign(new THREE.Raycaster(), { firstHitOnly: true });
+  /** The traffic fleet's mesh, found once by the villager stop (null: none). */
+  private tourCars: THREE.Object3D | null | undefined = undefined;
 
   // Completion meter recompute throttle (localStorage reads are cheap; 2.5s
   // keeps the pill fresh without touching storage every frame)
@@ -401,7 +476,8 @@ export class SimpleApp {
 
   // Island shop (hat cosmetics, paid with meadow coins)
   private readonly hatCatalog: Array<{ id: HatId; icon: string; name: string; price: number }> = [
-    { id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 8 },
+    // 5, not 8 (P2-A9): the arrival trail's 5 coins buy a first hat.
+    { id: 'cap', icon: '🧢', name: 'Explorer Cap', price: 5 },
     { id: 'party', icon: '🥳', name: 'Party Hat', price: 10 },
     { id: 'flower', icon: '🌸', name: 'Flower Crown', price: 12 },
     { id: 'chef', icon: '👨‍🍳', name: "Chef's Toque", price: 14 },
@@ -725,8 +801,21 @@ export class SimpleApp {
       // it before the world is built, so its fetch starts here and overlaps
       // world-gen; the await where it is constructed is then only a microtask.
       // A failed fetch resolves null: the island plays solo, chat stays off.
+      // NpcQuests is its own chunk (wave 4, bundle): its first use is after
+      // the world is built (the quest markers), so its fetch starts here and
+      // overlaps world-gen like Multiplayer's; the await where it is
+      // constructed is then only a microtask. Quests are part of the game, so
+      // a failed fetch is tried once more before init fails as it would on a
+      // failed main chunk.
+      const npcQuestsModule = import('./NpcQuests').catch(() => import('./NpcQuests'));
       const multiplayerModule = import('./Multiplayer').catch((e: unknown) => {
         console.warn('Multiplayer chunk failed to load; playing solo:', e);
+        return null;
+      });
+      // Chat rides with Multiplayer (wave-4 bundle carry-over): no peers, no
+      // chat, so it is its own chunk too. A failed fetch leaves chat off.
+      const chatModule = import('./Chat').catch((e: unknown) => {
+        console.warn('Chat chunk failed to load; chat stays off:', e);
         return null;
       });
       console.log('🎨 SimpleRenderer created:', {
@@ -813,6 +902,8 @@ export class SimpleApp {
       // Pickup ding + analytics on every completed delivery
       this.deliverySystem.setOnDeliveryComplete((d) => {
         sfx.collect();
+        // P2-A9: a delivery pays +3 (the chain's halo still waits at the end).
+        this.payCoins(SimpleApp.DELIVERY_PAY, 'Delivery');
         // The visitor chose the courier chain: from now on the pill may point
         // at parcels (after the districts, compassTarget's branch 7).
         this.deliveryOptIn = true;
@@ -853,7 +944,14 @@ export class SimpleApp {
       });
 
       // NPC quests: stateful dialogue + rewards layered over ambient lines
-      this.npcQuests = new NpcQuestSystem();
+      this.npcQuests = new (await npcQuestsModule).NpcQuestSystem();
+      // P2-A10: the Gardener counts meadow pickups, not held coins, so a
+      // shop purchase or a lesson's pay no longer moves the quest. Without
+      // the scene's feed, the held-coins arithmetic as before.
+      if (typeof this.scene.setOnMeadowCoin === 'function') {
+        this.npcQuests.useMeadowCounter();
+        this.scene.setOnMeadowCoin((e) => this.npcQuests.onMeadowCoin(e));
+      }
       this.scene.setQuestMarkers(this.npcQuests.getGiverNamesWithAvailableQuests());
 
       // Restore the shop wardrobe (owned + equipped hats) + consumables
@@ -872,6 +970,10 @@ export class SimpleApp {
         this.lessons = mergeLessons(
           [],
           JSON.parse(localStorage.getItem('ds_lessons') ?? '[]') as unknown,
+        );
+        this.schoolEnrolled = localStorage.getItem('ds_school_enrolled') === '1';
+        this.lessonActs = new Set(
+          mergeLessons([], JSON.parse(localStorage.getItem('ds_lesson_acts') ?? '[]') as unknown),
         );
         this.timber = Math.max(0, parseInt(localStorage.getItem('ds_timber') ?? '0', 10) || 0);
         this.ownedSickle = localStorage.getItem('ds_sickle') === '1';
@@ -952,7 +1054,8 @@ export class SimpleApp {
       // visitors. Wired to the mobile chat/mic HUD buttons and to
       // Enter/V(oice) on desktop (see setupDebugShortcuts-adjacent binding
       // below, near the input manager setup). No multiplayer, no chat.
-      this.chat = multiplayer ? new Chat(multiplayer) : undefined;
+      const chatMod = multiplayer ? await chatModule : null;
+      this.chat = multiplayer && chatMod ? new chatMod.Chat(multiplayer) : undefined;
       // DOM twins live in the overlay so photo mode hides them for free.
       this.hudLabels = new HudLabels(this.ui.getOverlay());
       // Expandable island map: tap the radar (or press M) for the full map.
@@ -977,6 +1080,9 @@ export class SimpleApp {
       // Portfolio Passport: visiting all four work zones unlocks the Founder's
       // Golden Crown — the mechanic that routes explorers through the real work.
       this.passport = new Passport();
+      // P2-A9: seed the paid-stamps record now, before any stamp of this
+      // visit can land, so a fresh visitor's first stamp pays.
+      this.payStamps();
       this.passport.setOnComplete(() => this.grantPassportReward());
       this.ui.setPassport(this.passport);
       // First steps (A6): the guide and its card, armed later by the welcome
@@ -1160,6 +1266,7 @@ export class SimpleApp {
             localStorage.setItem('ds_hint_earn', '1');
             this.ui.toast('🪙 Coins! The 📔 Journal (Portfolio menu) lists every way to earn.', {
               hint: true,
+              until: this.journalSeenNow,
             });
           }
         } catch {
@@ -1584,8 +1691,12 @@ export class SimpleApp {
       // Firebase touches that defeated Multiplayer's deliberate deferral).
       // subscribedAt is stamped when the subscription actually starts, so the
       // 3s replay-burst guard and the away digest keep their semantics.
+      // worldBenches.ts comes in with import() (wave 4, bundle): its first
+      // use is this idle slot, so it stays out of the main chunk.
       this.idleDefer(() => {
-        void subscribeBenches((b) => this.scene.renderWorldBench(b.plot));
+        void import('./worldBenches')
+          .then((m) => m.subscribeBenches((b) => this.scene.renderWorldBench(b.plot)))
+          .catch((e: unknown) => console.warn('Benches unavailable:', e));
         // Builds stream: render + own-map + fresh-build discovery pulse +
         // away digest (count compared to last visit, after the replay burst).
         let totalBuilds = 0;
@@ -1694,6 +1805,9 @@ export class SimpleApp {
         // synchronous room build never joins the boot block (reduced motion
         // reaches here before the first frame).
         window.setTimeout(this.warmRoomsEarly, 0);
+        // The First steps card's module, in an idle slot while the welcome
+        // card is up (or at once on a link that arms the guide itself).
+        this.idleDefer(() => void loadGuideCard(), 2000);
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -2042,8 +2156,24 @@ export class SimpleApp {
     });
   }
 
+  /**
+   * A hall's own panel, opened by walking in ('proximity' alone stamps the
+   * passport). P2-A9: the stamp pays HERE, not on refreshCompletion's 2.5 s
+   * cadence, which paid each +5 one tour stop late (probe: 1, 7, 15, 21 coins
+   * at the four stops, the last +5 after the completion card).
+   */
+  private openHallPanel(zone: { id: string; name: string }): void {
+    try {
+      this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
+    } finally {
+      this.payStamps();
+    }
+  }
+
   /** Passport complete: grant + auto-equip the Golden Crown, persist, celebrate. */
   private grantPassportReward(): void {
+    // P2-A9: the fourth stamp's +5 lands before the card that counts coins.
+    this.payStamps();
     const hat = 'crown';
     if (!this.ownedHats.has(hat)) {
       this.ownedHats.add(hat);
@@ -2402,6 +2532,88 @@ export class SimpleApp {
     contact: ['Hiring, or\na project?', 'admin@\ndigiscalability\n.com'],
   };
 
+  /** The contact email the Contact hall shows and copies (Fact Sheet). */
+  private static readonly OWNER_EMAIL = 'admin@digiscalability.com';
+  /**
+   * What each hall shows (P2-A11), handed to B's enterInterior as its
+   * exhibits (P2-B12). Written from the Public Fact Sheet and the panels'
+   * copy: no 'agent', no typed counts, Bano's Cookbook is Ammi's recipes,
+   * and DigiScalability is one person. Body text is 48 canvas px (B's
+   * EXHIBIT_FONT), so a side poster holds about four short lines. A chip
+   * with an id on the Projects posters becomes a pegboard spot that opens
+   * that card (at most four). INTERIOR_CONTENT stays as the fallback.
+   * '{use}' / '{Use}' name the room's action key for the visitor's input
+   * (interiorExhibits): 'press E' on a keyboard, 'tap USE' on touch, since
+   * these are canvas text and touchify only rewrites the DOM prompt.
+   */
+  private static readonly INTERIOR_EXHIBITS: Record<string, Exhibits> = {
+    welcome: {
+      left: { lines: ['The Hub', 'Every avenue starts here'] },
+      right: { lines: ['The wall map:', '{use} to set the compass'] },
+    },
+    professional: {
+      left: { lines: ['Now: founder & lead developer, DigiScalability', 'since Jan 2025'] },
+      right: {
+        lines: ['The stack'],
+        chips: [
+          { label: 'TypeScript' },
+          { label: 'Three.js' },
+          { label: 'Firebase' },
+          { label: 'Next.js' },
+        ],
+      },
+      screen: { lines: ['CV · LinkedIn · GitHub — {use}'] },
+    },
+    projects: {
+      left: {
+        lines: ['{Use} at a card'],
+        chips: [
+          { label: 'RankPilot · pre-launch', id: 'rankpilot' },
+          { label: 'ChocoMate · paused', id: 'chocomate' },
+        ],
+      },
+      right: {
+        lines: ['{Use} at a card'],
+        chips: [
+          { label: 'Bano’s Cookbook', id: 'banos' },
+          { label: 'Insta Services API', id: 'insta' },
+          { label: 'digiscalability.com' },
+        ],
+      },
+      screen: { lines: ['This island — open source (MIT)'] },
+    },
+    personal: {
+      left: { lines: ['Melbourne kitchens', '2017–2024, then back to code'] },
+      right: { lines: ['Bano’s Cookbook:', 'Ammi’s handwritten recipes from 1981'] },
+    },
+    contact: {
+      left: { lines: ['Hiring?', '{Use} at the counter for CV & contact'] },
+      right: { lines: ['Email'], chips: [{ label: SimpleApp.OWNER_EMAIL }] },
+    },
+  };
+
+  /** Copy for the input in use: the last input (D7), else the boot scheme. */
+  private touchCopy(): boolean {
+    const mode = this.ui.getInputMode?.() ?? (this.ui.isTouchDevice?.() ? 'touch' : 'keyboard');
+    return mode === 'touch';
+  }
+
+  /** P2-A11: a hall's exhibits with its action key named for the input in use (touch: USE). */
+  static interiorExhibits(id: string, touch: boolean): Exhibits | undefined {
+    const ex = SimpleApp.INTERIOR_EXHIBITS[id];
+    if (!ex) return undefined;
+    const key = (l: string) =>
+      l
+        .replace(/\{use\}/g, touch ? 'tap USE' : 'press E')
+        .replace(/\{Use\}/g, touch ? 'Tap USE' : 'Press E');
+    const out: Exhibits = {};
+    for (const k of ['title', 'left', 'right', 'screen'] as const) {
+      const part = ex[k];
+      if (part) out[k] = { ...part, lines: part.lines.map(key) };
+    }
+    return out;
+  }
+
   // Which themed furniture set each zone building opens into (houses → cottage).
   private static readonly INTERIOR_THEMES: Record<string, string> = {
     welcome: 'hall',
@@ -2416,7 +2628,9 @@ export class SimpleApp {
   private insideIsZone = false;
 
   /** Execute the interior hotspot the player pressed E on. */
-  private runInteriorAction(hs: { action: string; text?: string }): void {
+  private runInteriorAction(hs: { action: string; text?: string; arg?: string }): void {
+    // P2-A11: the hotspot's arg (P2-B12) decides when it names one.
+    if (hs.arg && this.runExhibitArg(hs.arg)) return;
     if (hs.action === 'leave') {
       this.exitBuilding(this.insideIsZone);
     } else if (hs.action === 'room') {
@@ -2440,13 +2654,80 @@ export class SimpleApp {
         });
       });
     } else if (hs.action === 'panel' && this.insideZone) {
-      this.ui.showZonePanel(
-        { id: this.insideZone.id, name: this.insideZone.name },
-        { source: 'proximity' },
-      );
+      this.openHallPanel(this.insideZone);
     } else if (hs.text) {
       this.ui.flashMessage(hs.text);
     }
+  }
+
+  /**
+   * An exhibit's action by its arg (P2-A11). Returns false for an arg this
+   * build does not know, so the hotspot's own action runs.
+   * - 'hire': the hire card, tracked as hire_cta {cta: 'interior'};
+   * - 'project' or 'project:<id>': Projects, at that card when named;
+   * - 'copy:email': the email to the clipboard, 'Copied' in the flash;
+   *   blocked, the Contact panel at its form;
+   * - 'compass': the compass to the nearest unstamped district (Projects
+   *   once all are stamped), through 'ds:guide-to';
+   * - 'times': the Island Times, as before.
+   */
+  private runExhibitArg(arg: string): boolean {
+    if (arg === 'hire') {
+      this.ui.showHireCard('cta');
+      track('hire_cta', { cta: 'interior' });
+      return true;
+    }
+    if (arg === 'project' || arg.startsWith('project:')) {
+      const anchor = arg.startsWith('project:') ? arg.slice('project:'.length) : '';
+      this.ui.showZonePanel(
+        { id: 'projects', name: 'projects' },
+        anchor ? { source: 'landmark', anchor } : { source: 'landmark' },
+      );
+      return true;
+    }
+    if (arg === 'copy:email') {
+      const email = SimpleApp.OWNER_EMAIL;
+      const blocked = (): void =>
+        this.ui.showZonePanel(
+          { id: 'contact', name: 'contact' },
+          { source: 'landmark', anchor: 'lead-form-block' },
+        );
+      const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+      if (!clip?.writeText) {
+        blocked();
+        return true;
+      }
+      clip.writeText(email).then(
+        () => this.ui.flashMessage(`✉️ Copied — ${email}`),
+        () => blocked(),
+      );
+      return true;
+    }
+    if (arg === 'compass') {
+      const from = this.insideZone ? this.zonePos(this.insideZone.id) : null;
+      const passport = this.passport;
+      let best = 'projects';
+      let bestD = Infinity;
+      if (from && passport) {
+        for (const z of this.zoneList ?? []) {
+          if (!passport.isStampZone(z.id) || passport.has(z.id)) continue;
+          const d = from.distanceToSquared(z.pos);
+          if (d < bestD) {
+            bestD = d;
+            best = z.id;
+          }
+        }
+      }
+      window.dispatchEvent(
+        new CustomEvent('ds:guide-to', { detail: { key: `district:${best}`, source: 'interior' } }),
+      );
+      return true;
+    }
+    if (arg === 'times') {
+      void this.ui.showIslandTimes();
+      return true;
+    }
+    return false;
   }
 
   private enterBuilding(id: string, isZone: boolean, zone?: { id: string; name: string }): void {
@@ -2470,7 +2751,10 @@ export class SimpleApp {
     sfx.blip();
     this.markDone('ds_entered_building');
     this.ui.fadeThrough(() => {
-      this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id);
+      // P2-A11: a hall gets its exhibits (houseId undefined for halls).
+      // Canvas text: the key is named for the input in use (touch: USE).
+      const exhibits = isZone ? SimpleApp.interiorExhibits(id, this.touchCopy()) : undefined;
+      this.scene.enterInterior(title, wall, left, right, theme, isZone ? undefined : id, exhibits);
       // No carry-over (INT-12): a key pressed on the doorstep, in the gap
       // between the last outdoor frame and this swap, never fires in the room.
       this.inputManager.clearLatched();
@@ -2479,10 +2763,11 @@ export class SimpleApp {
       // panel mid-build, so the panel threw (INT-02); fadeThrough's catch
       // swallowed it and this line never ran. The visitor stood in the room
       // with no Leave and no panel. Whatever a panel does, the way out exists.
-      this.ui.showLeaveButton(() => this.exitBuilding(isZone));
+      // P2-D2's optional title: 'Leave <room>'.
+      this.ui.showLeaveButton(() => this.exitBuilding(isZone), title);
       if (isZone && zone) {
         try {
-          this.ui.showZonePanel({ id: zone.id, name: zone.name }, { source: 'proximity' });
+          this.openHallPanel(zone);
         } catch (e) {
           console.warn('Zone panel failed inside the building:', e);
         }
@@ -2559,6 +2844,9 @@ export class SimpleApp {
    * the visitor's name (P2-A7).
    */
   private onRaceEvent(e: RaceEvent): void {
+    // P2-A8 quiet laps: hints wait from 'Go!' to the finish or the abort.
+    if (e.kind === 'start') this.racing = true;
+    else if (e.kind === 'finish' || e.kind === 'abort') this.racing = false;
     if (e.kind === 'finish') {
       sfx.questComplete();
       // Racing paid NOTHING before — the most complete loop in the game had
@@ -2622,6 +2910,7 @@ export class SimpleApp {
     if (e.kind === 'start') {
       sfx.raceGo();
       this.raceGuideTarget = null; // the guide CTA is fulfilled
+      this.raceGuideViaCar = false;
       track('race_start', { circuit: e.circuit ?? 'unknown' });
     } else if (e.kind === 'checkpoint') sfx.checkpoint();
   }
@@ -2905,7 +3194,7 @@ export class SimpleApp {
             this.ui.isTouchDevice()
               ? '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and tap USE to ask anything.'
               : '💬 A villager nearby talks through Claude Haiku 4.5 — walk up and press E to ask anything.',
-            { hint: true, until: this.talkHintStale },
+            { hint: true, until: this.talkHintStaleOrChatted },
           );
         }
       } catch {
@@ -2915,6 +3204,15 @@ export class SimpleApp {
 
     // Any open panel needs the cursor: let go of the opt-in pointer lock.
     if (this.ui.panels.isOpen()) this.inputManager.releasePointerLock();
+    // P2-A10: the coin hint points at the Journal; once it has been open the
+    // hint is stale. Read here, not from 'ds:modal', which does not fire for
+    // a journal opened over another modal.
+    if (!this.journalSeen && this.ui.panels.isOpen('journal')) this.journalSeen = true;
+    // P2-A14: Customise closed: the follow pose comes back.
+    if (this.customizeMirror && !this.ui['customizeDiv']) {
+      this.customizeMirror = false;
+      this.scene.getOrbitCamera().setMirrorPose(false);
+    }
     // P2-A6: the kiosk's 1.0 s lock runs from the shop panel's close, and a
     // finished cast forgets an E held during its wait.
     const shopOpen = this.ui.panels.isOpen('shop');
@@ -2962,8 +3260,9 @@ export class SimpleApp {
         this.ui.hideInteractionPrompt();
       } else if (this.scene.isInsideInterior()) {
         // Interiors never feed the orbit camera either — same banking, same
-        // whip on stepping out the door. Drain both interior branches.
-        this.inputManager.getCameraInput();
+        // whip on stepping out the door. Drain both interior branches; the
+        // walk branch hands the yaw to the room camera (P2-A11).
+        const roomLook = this.inputManager.getCameraInput();
         consumePinchZoomFactor();
         if (this.ui.isWatchOpen()) {
           // Watching the wall screen (or picking): the room holds still, the
@@ -2986,6 +3285,15 @@ export class SimpleApp {
           // room (GameScene's interior mode) and E interacts with the hotspot.
           const moveInput = this.inputManager.getMovementInput();
           const joy = this.ui.getJoystick();
+          // Looking around (P2-A11): a drag or J/L turns the room camera.
+          // As outdoors, + turns right (OrbitCamera.keyLook, 90°/s); the
+          // room's yaw grows to the left, hence the sign. Pinch and wheel
+          // stay drained.
+          const keyTurn =
+            (this.inputManager.isKeyPressed('l') ? 1 : 0) -
+            (this.inputManager.isKeyPressed('j') ? 1 : 0);
+          const turn = roomLook.deltaX + keyTurn * (Math.PI / 2) * Math.min(deltaTime, 0.1);
+          if (turn !== 0) this.scene.setInteriorLook?.(-turn);
           this.scene.setInteriorMove(
             Math.max(-1, Math.min(1, moveInput.forward + joy.forward)),
             Math.max(-1, Math.min(1, moveInput.strafe + joy.strafe)),
@@ -3269,6 +3577,10 @@ export class SimpleApp {
         let buildOpp: ReturnType<SimpleApp['nearestBuildOpportunity']> = null;
         const board = this.scene.nearestBoardable();
         const nearby = this.scene.getNearbyInteractable();
+        // P2-A13: a Projects work site within 3.5 u (5 squared distances).
+        const landmark = player
+          ? this.nearestLandmark(player.getWorldPositionInto(this._landmarkPos))
+          : null;
         this.talkAfloat = !!player && player.isInWater() && nearby?.type === 'npc';
         // Nearest thing wins: the vehicle only takes the prompt when it is
         // actually the closest interactable — a parked car used to shadow
@@ -3570,22 +3882,14 @@ export class SimpleApp {
             );
           }
         } else if (this.lessons.length < SimpleApp.LESSONS.length && this.scene.isNearSchool()) {
-          const next = SimpleApp.LESSONS.find(([id]) => !this.lessons.includes(id));
-          if (next) {
-            this.ui.showInteractionPrompt(
-              `📚 Press <strong>E</strong> to take lesson ${this.lessons.length + 1}/${SimpleApp.LESSONS.length} (+10 🪙)`,
-            );
-            if (this.inputManager.consumeKeyPress('e')) {
-              this.lessons.push(next[0]);
-              this.persistLessons();
-              this.scene.addCoins(10);
-              this.scene.floatCoinsAtPlayer(10);
-              this.scene.logTransaction('School lesson', 10);
-              sfx.coin();
-              this.ui.toast(this.lessonCopy(next));
-              track('lesson_done', { id: next[0], total: this.lessons.length });
-            }
-          }
+          // P2-A9: the School teaches by doing. E enrols and opens the
+          // lessons card; a lesson pays the first time its action happens.
+          this.ui.showInteractionPrompt(
+            this.schoolEnrolled
+              ? `📚 Press <strong>E</strong> for your lessons (${this.lessons.length}/${SimpleApp.LESSONS.length} learned)`
+              : '📚 Press <strong>E</strong> — the School: learn by doing, 10 🪙 a lesson',
+          );
+          if (this.inputManager.consumeKeyPress('e')) this.openSchool();
         } else if (
           (buildOpp = this.nearestBuildOpportunity()) !== null &&
           // A stake never shadows an actionable tool prompt (the farm's edge
@@ -3599,7 +3903,10 @@ export class SimpleApp {
           ) &&
           // Nor a nearer interactable: the courier tour's first mailbox
           // stands 3-6 u from a bench plot's advert.
-          !(nearby && nearby.distance < buildOpp.dist)
+          !(nearby && nearby.distance < buildOpp.dist) &&
+          // Nor a work site's info prompt (P2-A13): RankPilot's site showed
+          // only the bench plot's advert. An own build still wins its slot.
+          !(landmark && landmark.dist < 3.5 && !buildOpp.own)
         ) {
           const b = buildOpp;
           if (b.own) {
@@ -3651,7 +3958,9 @@ export class SimpleApp {
             }
           }
         } else if (this.scene.isNearBank()) {
-          this.ui.showInteractionPrompt('🏦 Press <strong>E</strong> to visit the vault');
+          this.ui.showInteractionPrompt(
+            '🏦 Press <strong>E</strong> — the vault keeps your coins safe between visits',
+          );
           if (this.inputManager.consumeKeyPress('e')) void this.openVault();
         } else if (this.scene.isNearKiosk()) {
           this.ui.showInteractionPrompt('🛒 Press <strong>E</strong> to browse the kiosk');
@@ -3710,6 +4019,20 @@ export class SimpleApp {
           if (this.inputManager.consumeKeyPress('e')) {
             this.scene.interactWith(nearby);
           }
+        } else if (landmark && !this.toolActionHere()) {
+          // P2-A13: a Projects work site says what it is, from the boards'
+          // table, and E opens Projects at its card. Below talk, doors,
+          // vehicles and tool actions; 'landmark' never stamps the passport.
+          const site = PROJECT_BOARDS[landmark.i];
+          this.ui.showInteractionPrompt(
+            `🏗️ Press <strong>E</strong> — ${esc(site?.name ?? 'Projects')} · ${esc(site?.status ?? '')}`,
+          );
+          if (this.inputManager.consumeKeyPress('e')) {
+            this.ui.showZonePanel(
+              { id: 'projects', name: 'projects' },
+              { source: 'landmark', anchor: SimpleApp.LANDMARK_ANCHORS[landmark.i] },
+            );
+          }
         } else if (this.ownedAxe && this.scene.nearestChoppableTree()) {
           const t = this.scene.nearestChoppableTree();
           const swing = (t?.hits ?? 0) + 1;
@@ -3723,6 +4046,7 @@ export class SimpleApp {
               this.persistTimber();
               this.packToast(`🪵 Timber! +${r.timber} (${this.timber} in the pack)`);
               track('tree_felled', { timber: this.timber });
+              this.learnLesson('chop');
             }
           }
         } else if (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) {
@@ -3768,7 +4092,7 @@ export class SimpleApp {
           // over casting, so the shore never shadows a conversation.
           this.ui.showInteractionPrompt('🎣 Press <strong>E</strong> to cast a line');
           if (this.inputManager.consumeKeyPress('e')) {
-            this.scene.tryCastLine(performance.now() / 1000);
+            if (this.scene.tryCastLine(performance.now() / 1000)) this.learnLesson('fish');
           }
         } else if (!this.ownedPickaxe && this.scene.nearestOreNode() !== null) {
           // Advert only — AFTER the cast branch so it never shadows an action.
@@ -3900,7 +4224,7 @@ export class SimpleApp {
 
     // First time a real visitor comes within chat range, surface how to
     // interact (idempotent + persisted, so this is effectively free after once).
-    if (this.multiplayer && this.multiplayer.nearestPeerDistance() < PROXIMITY_RADIUS) {
+    if (this.multiplayer && this.multiplayer.nearestPeerDistance() < CHAT_PROXIMITY_RADIUS) {
       this.ui.showProximityCoachMark();
     }
 
@@ -4072,6 +4396,11 @@ export class SimpleApp {
       !trailPos && (passport?.count() ?? 0) === 0 ? (this.guide?.talkTargetNow() ?? null) : null;
     const talkPos = talkWho ? this.scene.getNpcPosition(talkWho) : null;
     const st = this._compassState;
+    // P2-A8: a running race has the pill, ring by ring. A race that ended
+    // without its event (a teardown) lets the quiet-laps flag go here too.
+    const gate = this.scene.getRaceNextGate?.(this._qcRaceGate) ?? null;
+    if (!gate) this.racing = false;
+    st.racing = gate !== null;
     st.mapPick = this.mapGuideTarget !== null;
     st.arrivalHold = this.arrivalHold !== null;
     // Behind the welcome card, while First steps will arm as it closes, the
@@ -4092,6 +4421,12 @@ export class SimpleApp {
     let targetPos: THREE.Vector3 | null = null;
     let label = '';
     switch (compassTarget(st)) {
+      case 'racing':
+        // Rings are 1..n-1 in order; index 0 is the start gate, which is
+        // also the finish once every ring is through.
+        targetPos = this._qcRaceGate;
+        label = gate && gate.idx >= 1 ? `🏁 Ring ${gate.idx}/${gate.n - 1}` : '🏁 Finish line';
+        break;
       case 'map':
         // Island-map pick or a 'ds:guide-to' key: explicit intent, until reached.
         targetPos = this.mapGuideTarget;
@@ -4102,9 +4437,21 @@ export class SimpleApp {
         label = this.arrivalHold?.label ?? '';
         break;
       case 'race':
-        // "Beat the lap record" CTA, cleared when a race starts.
+        // "Beat the lap record" CTA, cleared when a race starts. From the
+        // CTA it leads to the nearest parked car until the visitor drives
+        // one, then to the start gate (P2-A8). Without B's accessor, the gate.
         targetPos = this.raceGuideTarget;
         label = '🏁 Race start';
+        if (this.raceGuideViaCar) {
+          const inCar = this.scene.isRidingVehicle() && this.scene.getActiveVehicleKind() === 'car';
+          const car = inCar
+            ? null
+            : ((this.scene as RaceScene).nearestVehiclePos?.('car', this._qcCar) ?? null);
+          if (car) {
+            targetPos = car;
+            label = '🚗 Grab a car';
+          }
+        }
         break;
       case 'ai':
         // "Ask the townsfolk": cleared once the visitor talks to an AI villager.
@@ -4217,6 +4564,7 @@ export class SimpleApp {
 
   /** Reused by updateQuestCompass every frame (no allocation). */
   private readonly _compassState: CompassState = {
+    racing: false,
     mapPick: false,
     arrivalHold: false,
     guidePending: false,
@@ -4720,9 +5068,15 @@ export class SimpleApp {
   }
 
   /** The First steps card, #ds-guide. Made once, by renderGuide, when the
-   *  guide first runs. */
-  private createGuideCard(): GuideCard {
-    return new GuideCard(this.ui.getOverlay(), {
+   *  guide first runs; null (and the module asked for) until GuideCard.ts
+   *  is in, so the next frame makes it. */
+  private createGuideCard(): GuideCard | null {
+    const mod = guideCardModule;
+    if (!mod) {
+      void loadGuideCard();
+      return null;
+    }
+    return new mod.GuideCard(this.ui.getOverlay(), {
       touch: this.ui.isTouchDevice(),
       reducedMotion: () => a11y.reducedMotion,
       onButton: (id) => this.onGuideButton(id),
@@ -4799,6 +5153,9 @@ export class SimpleApp {
   /** While the guide runs, or may arm as the welcome card closes, main-simple
    *  fires no unprompted hints: talk, coin, lost, district, specials. */
   private guideHoldsHints(): boolean {
+    // A running race holds them too (P2-A8 quiet laps): nothing fires and
+    // no ds_hint_* key burns between 'Go!' and the finish or the abort.
+    if (this.racing) return true;
     const g = this.guide;
     if (!g) return false;
     // The recruiter route holds them the same way while it is up.
@@ -4825,6 +5182,19 @@ export class SimpleApp {
     }
     return true;
   };
+
+  /** P2-A10: the talk hint is also stale once the visitor has chatted. */
+  private readonly talkHintStaleOrChatted = (): boolean => {
+    if (this.talkHintStale()) return true;
+    try {
+      return localStorage.getItem('ds_npc_chatted') === '1';
+    } catch {
+      return false;
+    }
+  };
+  /** P2-A10: the Journal has been open this visit (the coin hint's until). */
+  private journalSeen = false;
+  private readonly journalSeenNow = (): boolean => this.journalSeen;
 
   /** One of main-simple's own unprompted hints: now, or once the guide lets
    *  go; one that comes due inside a room waits for the door (P2-A1). */
@@ -4925,6 +5295,7 @@ export class SimpleApp {
     const chipUp = chip !== null && chip.showing();
     if (!this.guideCard && !g.running() && !routeUp && !chipUp) return;
     const card = (this.guideCard ??= this.createGuideCard());
+    if (!card) return;
     // One surface at a time on the one card: the recruiter route while it
     // shows, else First steps while it runs, else the Next chip. With none
     // wanted, the one that was up draws its own end (the card goes, and
@@ -5281,8 +5652,8 @@ export class SimpleApp {
       addStop(
         storyteller,
         `${aiCount} villagers talk through Claude Haiku 4.5, with a voice \u2014 planned each morning.`,
-        6.5,
-        9,
+        TOUR_VILLAGER_ALT,
+        TOUR_VILLAGER_BACK,
         storytellerNames,
       );
       addStop(
@@ -5304,19 +5675,23 @@ export class SimpleApp {
         9.5,
         14,
       );
+      // P2-A13 (C8 hand-off): the stop frames the work sites, not the hall.
+      const sites = this.workSitesCentre();
       addStop(
-        zones.get('projects'),
+        sites ?? zones.get('projects'),
         'The Projects District \u2014 this island, RankPilot (pre-launch), Bano\u2019s Cookbook and more.',
-        9.5,
-        14,
+        sites ? SimpleApp.SITES_TOUR_ALT : 9.5,
+        sites ? SimpleApp.SITES_TOUR_BACK : 14,
       );
       addStop(
         gardener,
         `${aiCount} townsfolk talk through Claude Haiku 4.5 \u2014 planned each morning, reported on nightly.`,
-        // High enough to clear tree canopies \u2014 NPC positions are live, so a low
-        // camera is occlusion roulette (a prod capture found a tree filling it).
-        6.5,
-        9,
+        // Close enough to read the villager (TOUR_VILLAGER_*). NPC positions
+        // are live, so a fixed camera is occlusion roulette: the bearing is
+        // chosen when the leg starts, for a clear, face-on frame
+        // (clearTourBearing).
+        TOUR_VILLAGER_ALT,
+        TOUR_VILLAGER_BACK,
         gardenerNames,
       );
       addStop(
@@ -5358,6 +5733,7 @@ export class SimpleApp {
       held: null,
       legS: 0,
       fromView: new THREE.Vector3(),
+      fromQuat: cam.quaternion.clone(),
     };
     this.holdTourVillager(stops[0]);
     this.tour.legS = this.legDuration(this.tour, stops[0]);
@@ -5403,12 +5779,23 @@ export class SimpleApp {
    * any villager with a position.
    */
   private tourVillager(names: readonly string[]): string | null {
+    return this.tourVillagers(names, 1)[0] ?? null;
+  }
+
+  /** The first `max` of `names` who are up and about, in order; with none
+   *  up, the first with a position (tourVillager's fallback). */
+  private tourVillagers(names: readonly string[], max: number): string[] {
     const targets = this.scene.getIsland().npcTargets;
+    const up: string[] = [];
     for (const n of names) {
+      if (up.length >= max) break;
+      if (up.includes(n)) continue;
       const t = targets.find((x) => x.name === n);
-      if (t?.meshRef.visible && this.scene.getNpcActivity(n) !== 'sleep') return n;
+      if (t?.meshRef.visible && this.scene.getNpcActivity(n) !== 'sleep') up.push(n);
     }
-    return names.find((n) => this.scene.getNpcPosition(n)) ?? null;
+    if (up.length) return up;
+    const any = names.find((n) => this.scene.getNpcPosition(n));
+    return any ? [any] : [];
   }
 
   /**
@@ -5421,10 +5808,29 @@ export class SimpleApp {
   private holdTourVillager(stop: TourStop): void {
     const tour = this.tour;
     if (!tour || !stop.villagers) return;
-    const who = this.tourVillager(stop.villagers);
-    const p = who ? this.scene.getNpcPosition(who) : null;
+    // The first villager up can stand where no bearing frames them (wave-4
+    // play review: the Gardener facing the office wall, seen from behind).
+    // The first TOUR_VILLAGER_TRIES villagers up, in the stop's order, are
+    // scored and the best frame wins; each later place costs
+    // TOUR_VILLAGER_RANK_COST, so the preferred villager wins a near-tie.
+    let who: string | null = null;
+    let p: THREE.Vector3 | null = null;
+    let turn = 0;
+    let best = Infinity;
+    this.tourVillagers(stop.villagers, TOUR_VILLAGER_TRIES).forEach((n, rank) => {
+      const at = this.scene.getNpcPosition(n);
+      if (!at) return;
+      const b = this.clearTourBearing(stop, at, n);
+      const cost = (b ? tourBearingCost(b) : 10) + rank * TOUR_VILLAGER_RANK_COST;
+      if (cost < best) {
+        best = cost;
+        who = n;
+        p = at;
+        turn = b?.turn ?? 0;
+      }
+    });
     if (!who || !p) return; // keep the start-of-tour framing
-    this.frameTourStop(stop, p, this.clearTourBearing(stop, p));
+    this.frameTourStop(stop, p, turn);
     // Never take over a real conversation's hold (none can start mid-tour,
     // but the slot is shared).
     if (!this.npcDialogueName) {
@@ -5435,33 +5841,115 @@ export class SimpleApp {
 
   /**
    * A bearing (turn about the villager's up) whose camera can SEE the
-   * villager. Villagers stand among buildings and trees, and one fixed
-   * bearing parked the camera behind them: SEEN in a capture, the held
-   * Storyteller dead centre in the frame and hidden by an office block.
-   * Tries eight bearings against the chase camera's own view-blocker list
-   * (terrain + every mesh big enough to block a view ray; it ray-tests that
-   * list every frame, so eight rays once per leg cost nothing).
+   * villager, face on where it can, through an uncluttered frame. Villagers
+   * stand among buildings, stalls, trees and parked cars. One fixed bearing
+   * parked the camera behind them (SEEN: the held Storyteller hidden by an
+   * office block), and one head ray let a market awning, a signpost and a tree
+   * canopy fill the frame round a small villager seen from behind (the wave-4
+   * play review of stop 4). Each of TOUR_BEARINGS candidates now casts the
+   * head ray plus TOUR_CLUTTER_GRID's rays through its own frame, against the
+   * chase camera's view-blocker list (the meshes near the shot only) and the
+   * traffic fleet, and pickTourBearing weighs clutter against a back view.
+   * Once per villager leg: about 250 rays against a few dozen meshes.
    */
-  private clearTourBearing(stop: TourStop, p: THREE.Vector3): number {
+  private clearTourBearing(stop: TourStop, p: THREE.Vector3, who: string): TourBearing | null {
     // Private on OrbitCamera; read here rather than widening its API.
     const blockers = (this.scene.getOrbitCamera() as unknown as { collisionMeshes?: THREE.Mesh[] })
       .collisionMeshes;
-    if (!blockers?.length) return 0;
+    if (!blockers?.length) return null;
+    const reach = Math.hypot(stop.alt, stop.back) + 4;
+    const centre = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const near: THREE.Object3D[] = [];
+    let ground: THREE.Object3D | null = null;
+    let groundR = 0;
+    for (const m of blockers) {
+      if ((m as THREE.InstancedMesh).isInstancedMesh) {
+        near.push(m); // its geometry's sphere is one instance's, not the set's
+        continue;
+      }
+      const g = m.geometry;
+      if (!g.boundingSphere) g.computeBoundingSphere();
+      const bs = g.boundingSphere;
+      if (!bs) continue;
+      const r = bs.radius * Math.max(...m.getWorldScale(scale).toArray());
+      if (r > groundR) {
+        groundR = r;
+        ground = m; // the terrain: the largest blocker by far
+      }
+      if (centre.copy(bs.center).applyMatrix4(m.matrixWorld).distanceTo(p) < reach + r) {
+        near.push(m);
+      }
+    }
+    // The traffic fleet is not a camera blocker (it moves); a parked or
+    // passing car still fills a foreground. Found once, by name (Traffic.ts).
+    if (this.tourCars === undefined) {
+      let root: THREE.Object3D = this.scene.getIsland().mesh;
+      while (root.parent) root = root.parent;
+      this.tourCars = root.getObjectByName('traffic_cars') ?? null;
+    }
+    const cars = this.tourCars as THREE.InstancedMesh | null;
+    if (cars?.isInstancedMesh) {
+      cars.computeBoundingSphere(); // the cars have moved since the last one
+      near.push(cars);
+    }
+    const props = near.filter((m) => m !== ground);
+    // The villager's front (+Z, GameScene's wander orientation) on its ground.
+    const t = this.scene.getIsland().npcTargets.find((n) => n.name === who);
+    const up = p.clone().normalize();
+    const front = new THREE.Vector3();
+    if (t) {
+      front.set(0, 0, 1).applyQuaternion(t.meshRef.getWorldQuaternion(new THREE.Quaternion()));
+      front.addScaledVector(up, -front.dot(up));
+      if (front.lengthSq() > 1e-6) front.normalize();
+    }
+    const cam = this.scene.getCamera();
+    const tanY = Math.tan(THREE.MathUtils.degToRad(cam.fov) / 2);
+    const tanX = tanY * cam.aspect;
     const probe: TourStop = { ...stop, look: new THREE.Vector3(), dir: new THREE.Vector3() };
     const camPos = new THREE.Vector3();
+    const head = p.clone().addScaledVector(up, 1.8);
     const toCam = new THREE.Vector3();
-    for (let k = 0; k < 8; k++) {
-      const turn = (k * Math.PI) / 4;
+    const q = new THREE.Quaternion();
+    const ray = this._tourRay;
+    const cands: TourBearing[] = [];
+    for (let k = 0; k < TOUR_BEARINGS; k++) {
+      const turn = (k * Math.PI * 2) / TOUR_BEARINGS;
       this.frameTourStop(probe, p, turn);
       camPos.copy(probe.dir).multiplyScalar(probe.r);
-      toCam.subVectors(camPos, probe.look);
+      // Head: nothing between it and the camera (terrain included).
+      toCam.subVectors(camPos, head);
       const dist = toCam.length();
-      this._tourRay.set(probe.look, toCam.divideScalar(dist));
-      this._tourRay.near = 0.5; // clear of the villager's own head
-      this._tourRay.far = dist;
-      if (this._tourRay.intersectObjects(blockers, false).length === 0) return turn;
+      ray.set(head, toCam.divideScalar(dist));
+      ray.near = 0.5; // clear of the villager's own head
+      ray.far = dist;
+      const headClear = ray.intersectObjects(near, false).length === 0;
+      // The frame: rays from the camera through the grid, stopping short of
+      // the villager. A hit is a prop in the foreground.
+      this.tourStopQuat(q, probe);
+      const subject = camPos.distanceTo(probe.look);
+      let blocked = 0;
+      if (headClear) {
+        for (const [x, y] of TOUR_CLUTTER_GRID) {
+          toCam
+            .set(x * tanX, y * tanY, -1)
+            .applyQuaternion(q)
+            .normalize();
+          ray.set(camPos, toCam);
+          ray.near = 0;
+          ray.far = subject * TOUR_CLUTTER_NEAR;
+          if (ray.intersectObjects(props, false).length > 0) blocked++;
+        }
+      }
+      // Facing: the villager's front against the way to the camera.
+      toCam.subVectors(camPos, p);
+      toCam.addScaledVector(up, -toCam.dot(up));
+      const facing = front.lengthSq() > 0.5 ? front.dot(toCam.normalize()) : 0;
+      cands.push({ turn, headClear, clutter: blocked / TOUR_CLUTTER_GRID.length, facing });
     }
-    return 0; // every bearing blocked: keep the default framing
+    ray.near = 0;
+    ray.far = Infinity;
+    return pickTourBearing(cands); // null: every bearing blocked
   }
 
   /** Let the tour's villager walk on again. */
@@ -5488,7 +5976,38 @@ export class SimpleApp {
       viewA.lengthSq() > 1e-9 && viewB.lengthSq() > 1e-9
         ? THREE.MathUtils.radToDeg(viewA.angleTo(viewB))
         : 0;
-    return tourLegDuration(arcDeg, turnDeg);
+    // MOT-06: the flight's own turn (orientation, carried frame included),
+    // sampled along its ease, keeps its peak under TOUR_TURN_PEAK_DEG_S.
+    this.tourStopQuat(this._tourToQuat, stop);
+    const arc = this._tourArcQ.setFromUnitVectors(tour.fromDir, stop.dir);
+    this._tourToQuat.premultiply(this._tourQ.copy(arc).invert());
+    const prev = this._tourPrevQ.copy(tour.fromQuat);
+    let maxDegPerE = 0;
+    for (let i = 1; i <= TOUR_TURN_SAMPLES; i++) {
+      const q = this.tourFlightQuat(this._tourSampleQ, tour.fromQuat, arc, i / TOUR_TURN_SAMPLES);
+      maxDegPerE = Math.max(
+        maxDegPerE,
+        THREE.MathUtils.radToDeg(prev.angleTo(q)) * TOUR_TURN_SAMPLES,
+      );
+      prev.copy(q);
+    }
+    return Math.max(tourLegDuration(arcDeg, turnDeg), tourTurnFloor(maxDegPerE));
+  }
+
+  /**
+   * MOT-06: the flight's orientation at turn-ease `e`: a slerp from the
+   * take-off pose to the stop's pose (this._tourToQuat, already brought back
+   * by the leg's arc), carried round the planet by the arc. Both ends are the
+   * poses themselves, so the seams at take-off and landing are continuous.
+   */
+  private tourFlightQuat(
+    out: THREE.Quaternion,
+    from: THREE.Quaternion,
+    arc: THREE.Quaternion,
+    e: number,
+  ): THREE.Quaternion {
+    out.slerpQuaternions(from, this._tourToQuat, e);
+    return out.premultiply(this._tourCarryQ.identity().slerp(arc, e));
   }
 
   /** A9: the first leg's rise (+3 u over 0.5 s, gone by landing); 0 on later legs. */
@@ -5536,16 +6055,26 @@ export class SimpleApp {
         Math.sin(Math.PI * e) * 7 +
         this.firstLegLift(tour, e);
       cam.position.copy(this._tourDir).multiplyScalar(r);
-      // A9: the VIEW direction slerps from the leg's first view to the
-      // stop's, so the turn per frame is the leg's turn under the ease
-      // (legDuration keeps its peak at 120 deg/s). Lerping the look POINT
-      // whipped the view while the camera was still close to the player.
-      const toView = this._tourViewB.copy(stop.dir).multiplyScalar(stop.r);
-      toView.subVectors(stop.look, toView).normalize();
-      this.slerpDirs(this._tourViewA, tour.fromView, toView, e);
-      cam.up.copy(this._tourUp.copy(cam.position).normalize());
-      cam.lookAt(this._tourLook.copy(cam.position).add(this._tourViewA));
-      if (k >= 1) this.landTourStop();
+      // MOT-06: the ORIENTATION slerps from the camera's own at take-off to
+      // the stop's dwell pose (lookAt with the dwell's up), so both seams are
+      // continuous and the turn per frame is the leg's turn under the ease.
+      // Slerping the view direction and re-deriving it with lookAt spun the
+      // camera ~10 deg/frame where the view passed the nadir (leg 1, 178 deg
+      // from the radial), because lookAt's yaw is undefined straight down.
+      // The slerp runs in a frame carried round the planet with the camera
+      // (arc = fromDir -> stop.dir, eased like the position), so the horizon
+      // stays near level mid-flight instead of rolling by the leg's arc.
+      // The turn runs on its own ease (easeTourTurn, peak slope 1.11 against
+      // the sine's 1.57) so its peak stays under 80 deg/s, not 116 (MOT-06).
+      this.tourStopQuat(this._tourToQuat, stop);
+      const arc = this._tourArcQ.setFromUnitVectors(tour.fromDir, stop.dir);
+      this._tourToQuat.premultiply(this._tourQ.copy(arc).invert());
+      // A slow frame turns at most TOUR_TURN_MAX_STEP_DEG; the camera catches
+      // up on the next frames and the leg lands once it has.
+      const want = this.tourFlightQuat(this._tourSampleQ, tour.fromQuat, arc, easeTourTurn(k));
+      cam.quaternion.rotateTowards(want, TOUR_TURN_MAX_STEP_RAD);
+      cam.up.copy(this._tourUp.copy(stop.look).normalize());
+      if (k >= 1 && cam.quaternion.angleTo(want) < 1e-4) this.landTourStop();
     } else {
       // Gentle drift around the stop while the caption is read — held static
       // under reduced motion (a rotation the user cannot stop, however slow,
@@ -5560,6 +6089,14 @@ export class SimpleApp {
       cam.lookAt(stop.look);
       if (tour.t >= TOUR_DWELL_S) this.advanceTourStop();
     }
+  }
+
+  /** MOT-06: the orientation the dwell gives `stop` (camera at stop.dir × r, looking at stop.look, up = the look point's radial). */
+  private tourStopQuat(out: THREE.Quaternion, stop: TourStop): void {
+    const eye = this._tourLook.copy(stop.dir).multiplyScalar(stop.r);
+    const up = this._tourViewB.copy(stop.look).normalize();
+    this._tourMat.lookAt(eye, stop.look, up);
+    out.setFromRotationMatrix(this._tourMat);
   }
 
   private advanceTourStop(): void {
@@ -5578,6 +6115,7 @@ export class SimpleApp {
     tour.fromDir.copy(cam.position).normalize();
     tour.fromR = cam.position.length();
     tour.fromLook.copy(prev.look);
+    tour.fromQuat.copy(cam.quaternion);
     // The caption stays on the stop being left until the camera lands.
     this.holdTourVillager(tour.stops[tour.idx]);
     tour.legS = this.legDuration(tour, tour.stops[tour.idx]);
@@ -5767,6 +6305,7 @@ export class SimpleApp {
       aware || canned[0] || 'Hello, traveller.',
       async (text) => {
         track('npc_chat_sent', { npc: npcData.name });
+        this.learnLesson('chat');
         const res = await askNpc(npcData.name, text);
         if (res.reply && !res.fallback) return res.reply;
         // A written line stands in (askNpc counted it as npc_fallback),
@@ -6003,6 +6542,7 @@ export class SimpleApp {
     const pos = this.scene.getRaceStartPosition('land') ?? this.scene.getRaceStartPosition('water');
     if (!pos) return;
     this.raceGuideTarget = pos;
+    this.raceGuideViaCar = true;
     this.ui.flashMessage(
       '\ud83c\udfc1 Follow the compass to the start gate \u2014 grab a car and drive through the glowing rings',
     );
@@ -6069,6 +6609,8 @@ export class SimpleApp {
    * inside the UI layer surface without extra wiring).
    */
   private refreshCompletion(): void {
+    // P2-A9: new stamps pay +5 each (the cadence and every flag site land here).
+    this.payStamps();
     const flag = (k: string): boolean => {
       try {
         return localStorage.getItem(k) === '1';
@@ -6155,6 +6697,7 @@ export class SimpleApp {
    */
   private hintsQuiet(): boolean {
     return (
+      this.racing ||
       this.ui.panels.isOpen() ||
       this.ui.isWelcomeVisible() ||
       this.scene.isInsideInterior() ||
@@ -6606,10 +7149,16 @@ export class SimpleApp {
           this.multiplayer?.setHat(id as HatId);
           saveProfile({ hat: id, ownedHats: [...this.ownedHats] });
           track('hat_equipped', { hat: id });
+          // P2-A14: the camera comes round to the front so the hat shows.
+          this.scene.getOrbitCamera().setMirrorPose(true);
           render();
+          // On a phone the shop is a full-height sheet over the avatar: it
+          // steps aside for a moment so the hat is seen (P2-A14, phone).
+          this.peekPastShop();
         },
         () => {
-          /* closed */
+          // The follow pose returns with the shop's close (P2-A14).
+          this.scene.getOrbitCamera().setMirrorPose(false);
         },
       );
     };
@@ -6849,7 +7398,12 @@ export class SimpleApp {
     const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
     const [res] =
       b.system === 'bench'
-        ? [await placeBench(b.plot)]
+        ? [
+            await import('./worldBenches').then(
+              (m) => m.placeBench(b.plot),
+              () => null,
+            ),
+          ]
         : await Promise.all([placeBuild(b.plot, b.kind), sleep(1600)]);
     if (typeof res !== 'number') {
       if (b.system === 'build') this.scene.cancelConstruction(b.plot);
@@ -6871,6 +7425,7 @@ export class SimpleApp {
     }
     sfx.coin();
     track('build_placed', { system: b.system, kind: b.name, plot: b.plot, slot: res });
+    this.learnLesson('build');
     const PAYOFF: Record<string, string> = {
       signpost: '🪧 Raised! Travellers will read it forever.',
       lantern: '🏮 Raised! Watch it light when night falls.',
@@ -6955,6 +7510,253 @@ export class SimpleApp {
       /* no storage */
     }
     saveProfile({ lessons: this.lessons });
+  }
+
+  // ── Work-site landmarks (P2-A13) ────────────────────────────────────
+  /** The Projects card each construction_<i> site opens, in WORK_SITES
+   *  order (SignPainter.PROJECT_BOARDS names the same five). */
+  private static readonly LANDMARK_ANCHORS = ['rankpilot', 'chocomate', 'island', 'banos', 'insta'];
+  private static readonly LANDMARK_U = 3.5;
+  /** The five sites' world positions, read once (they never move). */
+  private landmarkSites: Array<THREE.Vector3 | null> | null = null;
+  private readonly _landmarkPos = new THREE.Vector3();
+  private readonly _landmark = { i: 0, dist: 0 };
+
+  /** The nearest work site within 3.5 u, or null. The returned object is
+   *  reused frame to frame. */
+  private nearestLandmark(p: THREE.Vector3): { i: number; dist: number } | null {
+    if (!this.landmarkSites) {
+      const root = this.scene.getIsland()?.mesh;
+      if (!root) return null;
+      const sites: Array<THREE.Vector3 | null> = [];
+      let found = 0;
+      for (let i = 0; i < SimpleApp.LANDMARK_ANCHORS.length; i++) {
+        const o = root.getObjectByName(`construction_${i}`);
+        sites.push(o ? o.getWorldPosition(new THREE.Vector3()) : null);
+        if (o) found++;
+      }
+      if (found === 0) return null; // not built yet: look again next frame
+      this.landmarkSites = sites;
+    }
+    const max = SimpleApp.LANDMARK_U * SimpleApp.LANDMARK_U;
+    let best = -1;
+    let bestD = max;
+    for (let i = 0; i < this.landmarkSites.length; i++) {
+      const s = this.landmarkSites[i];
+      if (!s) continue;
+      const d = s.distanceToSquared(p);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    if (best < 0) return null;
+    this._landmark.i = best;
+    this._landmark.dist = Math.sqrt(bestD);
+    return this._landmark;
+  }
+
+  /** The tour's Projects stop (P2-A13): the five sites ring the hall 20-76 u
+   *  apart, too wide for one frame, so the stop studies the centre of the
+   *  closest three, RankPilot, Bano's Cookbook and Insta Services API
+   *  (20-45 u apart). Measured at 1440x900: the Insta Services API and
+   *  Bano's Cookbook dioramas are in frame (the hall stop showed none). */
+  private static readonly SITES_TOUR = [0, 3, 4];
+  private static readonly SITES_TOUR_ALT = 16;
+  private static readonly SITES_TOUR_BACK = 20;
+
+  /** The tour's sites' centre on the surface; null before the island has them. */
+  private workSitesCentre(): THREE.Vector3 | null {
+    this.nearestLandmark(this._landmarkPos.set(0, 0, 0));
+    const all = this.landmarkSites ?? [];
+    const sites = SimpleApp.SITES_TOUR.map((i) => all[i]).filter((s): s is THREE.Vector3 => !!s);
+    if (sites.length === 0) return null;
+    const c = new THREE.Vector3();
+    let r = 0;
+    for (const s of sites) {
+      c.add(s);
+      r += s.length();
+    }
+    return c.normalize().multiplyScalar(r / sites.length);
+  }
+
+  /** A tool action is available here (chop, harvest, ore, cast): it
+   *  outranks a landmark's info prompt. */
+  private toolActionHere(): boolean {
+    return (
+      (this.ownedAxe && this.scene.nearestChoppableTree() !== null) ||
+      (this.ownedSickle && this.scene.nearestHarvestableCrop() !== null) ||
+      (this.ownedPickaxe && this.scene.nearestOreNode() !== null) ||
+      (this.ownedRod && this.scene.canCastHere())
+    );
+  }
+
+  // ── The economy's first-visit pays (P2-A9) ──────────────────────────
+  private static readonly LESSON_PAY = 10;
+  private static readonly STAMP_PAY = 5;
+  private static readonly DELIVERY_PAY = 3;
+  /** The School has been opened once (ds_school_enrolled). */
+  private schoolEnrolled = false;
+  /** Lesson actions that have happened on this device (ds_lesson_acts),
+   *  paid or not: enrolment pays the ones already done. */
+  private lessonActs = new Set<string>();
+  /** Passport stamps already paid (ds_stamp_paid); -1 until first read. */
+  private stampsPaid = -1;
+
+  /** One of A's pays: coins, the float, the ledger line and the counter.
+   *  Never 'ds:coin' (B9 fires it for pickups only); D11's chip pops
+   *  through the counter delta. */
+  private payCoins(n: number, why: string): void {
+    this.scene.addCoins(n);
+    this.scene.floatCoinsAtPlayer(n);
+    this.scene.logTransaction(why, n);
+    this.ui.updateCoinCounter(this.scene.getCoinsCollected());
+  }
+
+  /**
+   * Passport stamps pay +5 each, compared against ds_stamp_paid. With no
+   * record yet, the record starts at today's count: a returning visitor
+   * gets no back-pay. Passport.ts is unchanged.
+   */
+  private payStamps(): void {
+    const passport = this.passport;
+    if (!passport) return;
+    const n = passport.count();
+    if (this.stampsPaid < 0) {
+      let saved: number | null = null;
+      try {
+        const raw = localStorage.getItem('ds_stamp_paid');
+        if (raw !== null) saved = Math.max(0, parseInt(raw, 10) || 0);
+      } catch {
+        /* no storage: count from now */
+      }
+      this.stampsPaid = saved ?? n;
+      if (saved === null) this.persistStampsPaid();
+    }
+    if (n <= this.stampsPaid) return;
+    const pay = (n - this.stampsPaid) * SimpleApp.STAMP_PAY;
+    this.stampsPaid = n;
+    this.persistStampsPaid();
+    this.payCoins(pay, 'Passport stamp');
+  }
+
+  private persistStampsPaid(): void {
+    try {
+      localStorage.setItem('ds_stamp_paid', String(this.stampsPaid));
+    } catch {
+      /* session only */
+    }
+  }
+
+  /** A lesson's row title, in the visitor's scheme (A11): no WASD or Space
+   *  on touch. */
+  private lessonTitle(id: string): string {
+    const touch = this.ui.isTouchDevice();
+    switch (id) {
+      case 'move':
+        if (touch) return 'Walk with the joystick, push it to the edge to run';
+        return SimpleApp.LEGACY_RUN
+          ? 'Walk with WASD, hold Space while moving to run'
+          : 'Walk with WASD, hold Shift to run';
+      case 'fish':
+        return 'Cast a line at any shore';
+      case 'chop':
+        return 'Fell a tree with the axe';
+      case 'feed':
+        return 'Throw feed to the birds, cats or fish';
+      case 'chat':
+        return 'Ask a villager anything';
+      case 'build':
+        return 'Raise something at a build stake';
+      default:
+        return id;
+    }
+  }
+
+  /** Where a lesson's 'Show me' sends the compass (none for moving). */
+  private lessonGuideKey(id: string): string | undefined {
+    switch (id) {
+      case 'fish':
+        return this.ownedRod ? 'shore' : 'kiosk';
+      case 'chop':
+        return this.ownedAxe ? 'carpenter' : 'kiosk';
+      case 'feed':
+        return 'kiosk';
+      case 'chat':
+        return 'villager:ai-nearest';
+      case 'build':
+        return 'stake:nearest';
+      default:
+        return undefined;
+    }
+  }
+
+  /** The School's E: enrol on the first visit (paying every lesson whose
+   *  action has already happened; moving always has), then the card. */
+  private openSchool(): void {
+    if (!this.schoolEnrolled) {
+      this.schoolEnrolled = true;
+      try {
+        localStorage.setItem('ds_school_enrolled', '1');
+      } catch {
+        /* session only */
+      }
+      this.noteLessonAct('move');
+      let paid = 0;
+      for (const [id] of SimpleApp.LESSONS) {
+        if (this.lessonActs.has(id) && !this.lessons.includes(id)) {
+          this.payLesson(id, false);
+          paid += SimpleApp.LESSON_PAY;
+        }
+      }
+      if (paid > 0) {
+        sfx.coin();
+        this.ui.toast(`📚 Enrolled — +${paid} 🪙 for what you have already learned.`);
+      }
+    }
+    this.ui.showLessons(
+      SimpleApp.LESSONS.map(([id]) => ({
+        id,
+        title: this.lessonTitle(id),
+        done: this.lessons.includes(id),
+        reward: SimpleApp.LESSON_PAY,
+        guideKey: this.lessonGuideKey(id),
+      })),
+    );
+  }
+
+  /** Record a lesson's action; once enrolled, its first time pays. */
+  private learnLesson(id: string): void {
+    this.noteLessonAct(id);
+    if (!this.schoolEnrolled || this.lessons.includes(id)) return;
+    this.payLesson(id, true);
+  }
+
+  private noteLessonAct(id: string): void {
+    if (this.lessonActs.has(id)) return;
+    this.lessonActs.add(id);
+    try {
+      localStorage.setItem('ds_lesson_acts', JSON.stringify([...this.lessonActs]));
+    } catch {
+      /* session only */
+    }
+  }
+
+  /**
+   * Pay one lesson once. lesson_learned {id, n} replaces lesson_done, whose
+   * meaning (a School press) this would change; the two series never mix.
+   */
+  private payLesson(id: string, announce: boolean): void {
+    if (this.lessons.includes(id)) return;
+    this.lessons.push(id);
+    this.persistLessons();
+    this.payCoins(SimpleApp.LESSON_PAY, 'School lesson');
+    track('lesson_learned', { id, n: this.lessons.length });
+    const lesson = SimpleApp.LESSONS.find(([l]) => l === id);
+    if (announce && lesson) {
+      sfx.coin();
+      this.ui.toast(`${this.lessonCopy(lesson)} (+${SimpleApp.LESSON_PAY} 🪙)`);
+    }
   }
 
   private persistHarvest(): void {
@@ -7159,6 +7961,7 @@ export class SimpleApp {
       this.persistFishFeed();
       this.refreshFeedHud();
       track('fish_feed_thrown', { left: this.fishFeed });
+      this.learnLesson('feed');
       return;
     }
     // Land: try the feed for the animal you're aiming at first, then the other.
@@ -7173,10 +7976,20 @@ export class SimpleApp {
         this.persistCatFeed();
         this.refreshFeedHud();
         track('cat_feed_thrown', { left: this.catFeed });
+        this.learnLesson('feed');
         return;
       }
       if (kind === 'bird' && this.birdFeed > 0) {
-        if (!this.scene.throwBirdFeed()) {
+        // P2-A10: say why. At night the birds roost: cat feed goes instead
+        // when the visitor holds some, else the roost line; never spent.
+        const why =
+          this.scene.throwBirdFeedReason?.() ?? (this.scene.throwBirdFeed() ? 'ok' : 'none');
+        if (why === 'night' && this.catFeed > 0) continue;
+        if (why === 'night') {
+          this.ui.flashMessage('🌙 The birds are roosting — try cat feed, or come back at dawn');
+          return;
+        }
+        if (why !== 'ok') {
           this.ui.flashMessage('🌾 Not here — try over open ground');
           return;
         }
@@ -7184,6 +7997,7 @@ export class SimpleApp {
         this.persistBirdFeed();
         this.refreshFeedHud();
         track('bird_feed_thrown', { left: this.birdFeed });
+        this.learnLesson('feed');
         return;
       }
     }
@@ -7222,7 +8036,49 @@ export class SimpleApp {
         saveProfile({ hat: id, ownedHats: [...this.ownedHats] });
       },
     });
+    // P2-A14: Customise shows the avatar from the front. It is a sheet with
+    // no close callback (and no ds:modal), so the frame tick lets go once
+    // its div is gone.
+    if (this.ui['customizeDiv']) {
+      this.customizeMirror = true;
+      this.scene.getOrbitCamera().setMirrorPose(true);
+    }
   }
+  /** P2-A14: Customise holds the mirror pose until its sheet closes. */
+  private customizeMirror = false;
+
+  /**
+   * P2-A14 on a phone: the shop sheet covers the middle of the screen, where
+   * the avatar stands, so the mirror pose would turn the camera behind it.
+   * When the sheet covers that point it fades out for SHOP_PEEK_MS (taps go
+   * nowhere meanwhile) and comes back as it was. A docked shop (desktop's
+   * Hats tab) leaves the avatar in view and is left alone.
+   */
+  private peekPastShop(): void {
+    const el = (this.ui as unknown as { shopDiv?: HTMLElement | null }).shopDiv ?? null;
+    if (!el || typeof el.animate !== 'function') return;
+    const r = el.getBoundingClientRect();
+    const x = window.innerWidth / 2;
+    const y = window.innerHeight * 0.55;
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;
+    const fade = a11y.reducedMotion ? 0 : 200;
+    const total = SimpleApp.SHOP_PEEK_MS + 2 * fade;
+    const taps = el.style.pointerEvents;
+    el.style.pointerEvents = 'none';
+    el.animate(
+      [
+        { opacity: 1 },
+        { opacity: 0, offset: fade / total },
+        { opacity: 0, offset: 1 - fade / total },
+        { opacity: 1 },
+      ],
+      { duration: total, easing: 'ease-in-out' },
+    ).onfinish = () => {
+      el.style.pointerEvents = taps;
+    };
+  }
+  /** How long the phone shop sheet stays aside after an equip (P2-A14). */
+  private static readonly SHOP_PEEK_MS = 1600;
 
   /** Persist the current body colours to localStorage + the cloud profile. */
   private saveAppearance(): void {

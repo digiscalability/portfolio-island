@@ -109,6 +109,7 @@ describe('the arrow points where the target is', () => {
 // ---- one target at a time (A7 with P2-A3) ---------------------------------
 describe('compassTarget: the pill picks one target, in order', () => {
   const none: CompassState = {
+    racing: false,
     mapPick: false,
     arrivalHold: false,
     guidePending: false,
@@ -124,6 +125,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
     goal: false,
   };
   const all: CompassState = {
+    racing: true,
     mapPick: true,
     arrivalHold: true,
     guidePending: false,
@@ -141,6 +143,7 @@ describe('compassTarget: the pill picks one target, in order', () => {
 
   test('the order table: each source wins over everything after it', () => {
     const order: Array<[keyof CompassState, string]> = [
+      ['racing', 'racing'],
       ['mapPick', 'map'],
       ['arrivalHold', 'hold'],
       ['raceGuide', 'race'],
@@ -165,6 +168,13 @@ describe('compassTarget: the pill picks one target, in order', () => {
     expect(compassTarget({ ...none, goal: true })).toBe('goal');
     expect(compassTarget({ ...none, goal: true, districtUnstamped: true })).toBe('district');
     expect(compassTarget(none)).toBeNull();
+  });
+
+  test('a running race has the pill over a map pick, the guide and the CTA (P2-A8)', () => {
+    expect(compassTarget({ ...none, racing: true })).toBe('racing');
+    expect(compassTarget({ ...all, guidePending: true })).toBe('racing');
+    // The start-gate CTA keeps its place below the map pick.
+    expect(compassTarget({ ...none, raceGuide: true, mapPick: true })).toBe('map');
   });
 
   test('behind the welcome card, with First steps about to arm, the pill waits (w1-fix nit)', () => {
