@@ -1842,6 +1842,22 @@ describe('wave-3 bundle carry-over: Multiplayer is its own chunk', () => {
     );
   });
 
+  test('P2-A14 on a phone: a shop sheet over the avatar steps aside after an equip', () => {
+    const m = stripped('main-simple.ts');
+    const shop = bodyOf(m, 'private openShop(');
+    const at = shop.indexOf('this.scene.getOrbitCamera().setMirrorPose(true);');
+    expect(at).toBeGreaterThan(-1);
+    expect(shop.indexOf('render();', at)).toBeLessThan(shop.indexOf('this.peekPastShop();', at));
+    const peek = bodyOf(m, 'private peekPastShop(');
+    // only when the sheet covers the avatar's spot; a docked shop is left alone
+    expect(peek).toContain('if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;');
+    // it comes back as it was, and takes no taps while it is aside
+    expect(peek).toContain("el.style.pointerEvents = 'none';");
+    expect(peek).toContain('const taps = el.style.pointerEvents;');
+    expect(peek).toContain('el.style.pointerEvents = taps;');
+    expect(peek).toContain('const fade = a11y.reducedMotion ? 0 : 200;');
+  });
+
   test('NpcQuests is its own chunk too: fetched before world-gen, awaited where it is built', () => {
     const m = stripped('main-simple.ts');
     expect(m).toContain("import type { NpcQuestSystem } from './NpcQuests';");

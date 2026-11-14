@@ -7152,6 +7152,9 @@ export class SimpleApp {
           // P2-A14: the camera comes round to the front so the hat shows.
           this.scene.getOrbitCamera().setMirrorPose(true);
           render();
+          // On a phone the shop is a full-height sheet over the avatar: it
+          // steps aside for a moment so the hat is seen (P2-A14, phone).
+          this.peekPastShop();
         },
         () => {
           // The follow pose returns with the shop's close (P2-A14).
@@ -8043,6 +8046,39 @@ export class SimpleApp {
   }
   /** P2-A14: Customise holds the mirror pose until its sheet closes. */
   private customizeMirror = false;
+
+  /**
+   * P2-A14 on a phone: the shop sheet covers the middle of the screen, where
+   * the avatar stands, so the mirror pose would turn the camera behind it.
+   * When the sheet covers that point it fades out for SHOP_PEEK_MS (taps go
+   * nowhere meanwhile) and comes back as it was. A docked shop (desktop's
+   * Hats tab) leaves the avatar in view and is left alone.
+   */
+  private peekPastShop(): void {
+    const el = (this.ui as unknown as { shopDiv?: HTMLElement | null }).shopDiv ?? null;
+    if (!el || typeof el.animate !== 'function') return;
+    const r = el.getBoundingClientRect();
+    const x = window.innerWidth / 2;
+    const y = window.innerHeight * 0.55;
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return;
+    const fade = a11y.reducedMotion ? 0 : 200;
+    const total = SimpleApp.SHOP_PEEK_MS + 2 * fade;
+    const taps = el.style.pointerEvents;
+    el.style.pointerEvents = 'none';
+    el.animate(
+      [
+        { opacity: 1 },
+        { opacity: 0, offset: fade / total },
+        { opacity: 0, offset: 1 - fade / total },
+        { opacity: 1 },
+      ],
+      { duration: total, easing: 'ease-in-out' },
+    ).onfinish = () => {
+      el.style.pointerEvents = taps;
+    };
+  }
+  /** How long the phone shop sheet stays aside after an equip (P2-A14). */
+  private static readonly SHOP_PEEK_MS = 1600;
 
   /** Persist the current body colours to localStorage + the cloud profile. */
   private saveAppearance(): void {
