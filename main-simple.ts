@@ -52,7 +52,7 @@ import {
   type GuideWorld,
   type RouteSource,
 } from './Guide';
-import { GuideCard } from './GuideCard';
+import type { GuideCard } from './GuideCard';
 import { HudLabels, type BubbleCandidate } from './HudLabels';
 import { expDecay, expDecayV3, tick as juiceTick } from './Juice';
 import { enterOpensChat } from './keyGuards';
@@ -97,6 +97,29 @@ import { WORLD_ERA, WORLD_RADIUS } from './WorldScale';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
 
 import './style.css';
+
+/**
+ * The First steps card's module (GuideCard.ts), loaded with import() (wave 4,
+ * bundle): nothing draws the card before the welcome card closes or a deep
+ * link arms the guide, so it stays out of the main chunk. afterIntro asks for
+ * it in an idle slot while the welcome card is up; renderGuide asks again on
+ * the frame it first wants the card and draws it on the frame the module is
+ * in. A failed fetch is asked for again after 3 s, not every frame.
+ */
+type GuideCardModule = typeof import('./GuideCard');
+let guideCardModule: GuideCardModule | null = null;
+let guideCardLoad: Promise<GuideCardModule | null> | null = null;
+export function loadGuideCard(): Promise<GuideCardModule | null> {
+  guideCardLoad ??= import('./GuideCard').then(
+    (m) => (guideCardModule = m),
+    (e: unknown) => {
+      console.warn('GuideCard module failed to load:', e);
+      window.setTimeout(() => (guideCardLoad = null), 3000);
+      return null;
+    },
+  );
+  return guideCardLoad;
+}
 
 // Analytics MUST fire at module evaluation, not after the world boots: the old
 // idle-deferred inject meant every visitor who bounced during the loading
@@ -1772,6 +1795,9 @@ export class SimpleApp {
         // synchronous room build never joins the boot block (reduced motion
         // reaches here before the first frame).
         window.setTimeout(this.warmRoomsEarly, 0);
+        // The First steps card's module, in an idle slot while the welcome
+        // card is up (or at once on a link that arms the guide itself).
+        this.idleDefer(() => void loadGuideCard(), 2000);
       };
       // Start the fly-in BEFORE the first frame renders: its first act is
       // placing the camera at the distant start, so no frame can ever show
@@ -5032,9 +5058,15 @@ export class SimpleApp {
   }
 
   /** The First steps card, #ds-guide. Made once, by renderGuide, when the
-   *  guide first runs. */
-  private createGuideCard(): GuideCard {
-    return new GuideCard(this.ui.getOverlay(), {
+   *  guide first runs; null (and the module asked for) until GuideCard.ts
+   *  is in, so the next frame makes it. */
+  private createGuideCard(): GuideCard | null {
+    const mod = guideCardModule;
+    if (!mod) {
+      void loadGuideCard();
+      return null;
+    }
+    return new mod.GuideCard(this.ui.getOverlay(), {
       touch: this.ui.isTouchDevice(),
       reducedMotion: () => a11y.reducedMotion,
       onButton: (id) => this.onGuideButton(id),
@@ -5253,6 +5285,7 @@ export class SimpleApp {
     const chipUp = chip !== null && chip.showing();
     if (!this.guideCard && !g.running() && !routeUp && !chipUp) return;
     const card = (this.guideCard ??= this.createGuideCard());
+    if (!card) return;
     // One surface at a time on the one card: the recruiter route while it
     // shows, else First steps while it runs, else the Next chip. With none
     // wanted, the one that was up draws its own end (the card goes, and

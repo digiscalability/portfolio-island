@@ -1124,17 +1124,25 @@ describe('A6: First steps, wired into main-simple', () => {
     const m = stripped('main-simple.ts');
     // setupGuide builds no card; renderGuide builds the one card the first
     // time the guide runs, and arming draws it at once.
-    expect(bodyOf(m, 'private setupGuide(')).not.toContain('new GuideCard(');
-    expect(m.split('new GuideCard(').length - 1).toBe(1);
+    expect(bodyOf(m, 'private setupGuide(')).not.toContain('new mod.GuideCard(');
+    expect(m.split('new mod.GuideCard(').length - 1).toBe(1);
     expect(bodyOf(m, 'private createGuideCard(')).toContain(
-      'return new GuideCard(this.ui.getOverlay(), {',
+      'return new mod.GuideCard(this.ui.getOverlay(), {',
     );
+    // GuideCard.ts is out of the main chunk (wave 4, bundle): a type import,
+    // one import(), asked for while the welcome card is up, and a card that
+    // is not in yet draws on the frame it is.
+    expect(m).toContain("import type { GuideCard } from './GuideCard';");
+    expect(m).toContain("guideCardLoad ??= import('./GuideCard').then(");
+    expect(bodyOf(m, 'private createGuideCard(')).toContain('void loadGuideCard();');
+    expect(m).toContain('this.idleDefer(() => void loadGuideCard(), 2000);');
     const render = bodyOf(m, 'private renderGuide(');
     // ...or the recruiter route shows (P2-A4): a visit that never arms either
     // still carries no #ds-guide
     // ...or the Next chip (P2-A12)
     expect(render).toContain('if (!this.guideCard && !g.running() && !routeUp && !chipUp) return;');
     expect(render).toContain('const card = (this.guideCard ??= this.createGuideCard());');
+    expect(render).toContain('if (!card) return;');
     expect(m.split('this.createGuideCard()').length - 1).toBe(1);
     expect(bodyOf(m, 'private armGuide(')).toContain('this.renderGuide();');
   });
@@ -1692,7 +1700,7 @@ describe('P2-A12: the Next chip, wired into main-simple', () => {
     // the surface that was up draws its own end before the next one draws
     expect(render).toContain('const surface = want ?? this.guideSurface ?? null;');
     // still exactly one card, however many surfaces
-    expect(m().split('new GuideCard(').length - 1).toBe(1);
+    expect(m().split('new mod.GuideCard(').length - 1).toBe(1);
   });
 
   test("its buttons: 'next' folds and unfolds; 'goal:<id>' goes through 'ds:guide-to' with source next", () => {

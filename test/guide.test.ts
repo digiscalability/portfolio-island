@@ -1174,6 +1174,9 @@ describe("main-simple: no #ds-guide and no 'ds:guide' until the guide arms (A6, 
     // The boot latch: importing the module then builds no app.
     (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
     const mod = await import('../main-simple');
+    // GuideCard.ts comes in with import() (wave 4, bundle): in, as after
+    // the welcome card's idle prefetch, so arming draws the card at once.
+    await mod.loadGuideCard();
     proto = mod.SimpleApp.prototype as unknown as typeof proto;
   }, 120000);
 
@@ -1288,6 +1291,9 @@ describe('main-simple: the pill names the villager First steps sends the visitor
   beforeAll(async () => {
     (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
     const mod = await import('../main-simple');
+    // GuideCard.ts comes in with import() (wave 4, bundle): in, as after
+    // the welcome card's idle prefetch, so arming draws the card at once.
+    await mod.loadGuideCard();
     proto = mod.SimpleApp.prototype as unknown as typeof proto;
     V3 = (await import('three')).Vector3;
   }, 120000);
@@ -1814,6 +1820,9 @@ describe('main-simple: a hire card closing arms the recruiter route (P2-A4)', ()
   beforeAll(async () => {
     (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
     const mod = await import('../main-simple');
+    // GuideCard.ts comes in with import() (wave 4, bundle): in, as after
+    // the welcome card's idle prefetch, so arming draws the card at once.
+    await mod.loadGuideCard();
     proto = mod.SimpleApp.prototype as unknown as typeof proto;
   }, 120000);
 
@@ -2368,6 +2377,9 @@ describe('main-simple: the Next chip takes the card when the first steps end (P2
   beforeAll(async () => {
     (window as unknown as { __lifeIslandBooted?: boolean }).__lifeIslandBooted = true;
     const mod = await import('../main-simple');
+    // GuideCard.ts comes in with import() (wave 4, bundle): in, as after
+    // the welcome card's idle prefetch, so arming draws the card at once.
+    await mod.loadGuideCard();
     proto = mod.SimpleApp.prototype as unknown as typeof proto;
   }, 120000);
 
