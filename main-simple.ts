@@ -91,7 +91,6 @@ import { SimpleUI } from './SimpleUI';
 import { applySoftLookFogPatch } from './SoftLook';
 import { cancelSpeech } from './Speech';
 import { isRealTheme } from './Theme';
-import { placeBench, subscribeBenches } from './worldBenches';
 import { BUILD_KIND_IDS, placeBuild, removeBuild, subscribeBuilds } from './worldBuilds';
 import { WORLD_ERA, WORLD_RADIUS } from './WorldScale';
 import { connectWorldState, getWorldState, moodNpcFlavor, MOOD_META } from './WorldState';
@@ -1685,8 +1684,12 @@ export class SimpleApp {
       // Firebase touches that defeated Multiplayer's deliberate deferral).
       // subscribedAt is stamped when the subscription actually starts, so the
       // 3s replay-burst guard and the away digest keep their semantics.
+      // worldBenches.ts comes in with import() (wave 4, bundle): its first
+      // use is this idle slot, so it stays out of the main chunk.
       this.idleDefer(() => {
-        void subscribeBenches((b) => this.scene.renderWorldBench(b.plot));
+        void import('./worldBenches')
+          .then((m) => m.subscribeBenches((b) => this.scene.renderWorldBench(b.plot)))
+          .catch((e: unknown) => console.warn('Benches unavailable:', e));
         // Builds stream: render + own-map + fresh-build discovery pulse +
         // away digest (count compared to last visit, after the replay burst).
         let totalBuilds = 0;
@@ -7385,7 +7388,12 @@ export class SimpleApp {
     const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
     const [res] =
       b.system === 'bench'
-        ? [await placeBench(b.plot)]
+        ? [
+            await import('./worldBenches').then(
+              (m) => m.placeBench(b.plot),
+              () => null,
+            ),
+          ]
         : await Promise.all([placeBuild(b.plot, b.kind), sleep(1600)]);
     if (typeof res !== 'number') {
       if (b.system === 'build') this.scene.cancelConstruction(b.plot);

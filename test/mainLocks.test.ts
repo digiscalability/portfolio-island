@@ -669,7 +669,11 @@ describe('from visualPolish.test.ts', () => {
     // The three boot-window Firebase touches run from idle slots (1.5s max
     // keeps the world beat arriving during the fly-in for buildAwayDelta).
     expect(main).toMatch(/idleDefer\(\s*\(\)\s*=>\s*connectWorldState/);
-    expect(main).toMatch(/idleDefer\(\(\)\s*=>\s*\{\s*void subscribeBenches/);
+    // worldBenches.ts itself comes in with import() in that slot (wave 4, bundle)
+    expect(main).toMatch(
+      /idleDefer\(\(\)\s*=>\s*\{\s*void import\('\.\/worldBenches'\)\s*\.then\(\(m\)\s*=>\s*m\.subscribeBenches\(/,
+    );
+    expect(main).not.toMatch(/^import [^;]*from '\.\/worldBenches';/m);
     // The postprocessing fetch starts BEFORE world gen so the RTT overlaps it.
     expect(main).toContain('SimpleRenderer.preloadPostProcessing()');
     expect(main.indexOf('SimpleRenderer.preloadPostProcessing()')).toBeLessThan(
