@@ -1562,3 +1562,40 @@ describe('the low tier draws the office desk once (wave-3 perf gate)', () => {
     expect(legs).toBe(4);
   }, 60000);
 });
+
+describe('the coins stay out of the room (B9: lowtier room draws 73 against 72)', () => {
+  test('the coin InstancedMesh and glint hide for a visit and come back on the way out', () => {
+    const sc = scene as unknown as {
+      coins: unknown[];
+      coinMesh: THREE.InstancedMesh | null;
+      coinGlint: THREE.InstancedMesh | null;
+      buildCoinInstances(): void;
+    };
+    const pos = new THREE.Vector3(0, 76, 0);
+    sc.coins = [
+      {
+        pos,
+        quat: new THREE.Quaternion(),
+        home: pos.clone(),
+        respawnAt: 0,
+        idx: 0,
+        spin: 0,
+        mesh: { name: 'coin_0', position: pos, visible: true },
+      },
+    ];
+    sc.coinMesh = null;
+    sc.buildCoinInstances();
+    const mesh = sc.coinMesh!;
+    // One draw spread over the island: never frustum culled, so only
+    // visibility keeps it out of a room at y -300.
+    expect(mesh.frustumCulled).toBe(false);
+    expect(mesh.visible).toBe(true);
+    enter('cottage');
+    expect(mesh.visible).toBe(false);
+    if (sc.coinGlint) expect(sc.coinGlint.visible).toBe(false);
+    scene.updateInteriorMode(1 / 60);
+    expect(mesh.visible).toBe(false);
+    scene.exitInterior();
+    expect(mesh.visible).toBe(true);
+  });
+});

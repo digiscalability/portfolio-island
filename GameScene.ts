@@ -9,7 +9,7 @@ import { EnvironmentCycle, EXTERIOR_LIGHTS_DAY_CUTOFF } from './EnvironmentCycle
 import { framingFov } from './Framing';
 import { fx } from './FxBudget';
 import { Island } from './Island';
-import { expDecayV3, squash } from './Juice';
+import { expDecayV3, squash, squashPivot } from './Juice';
 import { Mailbox } from './Mailbox';
 import { Materials } from './Materials';
 import * as NpcActivities from './NpcActivities';
@@ -184,9 +184,36 @@ fx.register('npcTalk', { desktop: true, low: true });
 // at the full distance and only the wall clamp bounds it.
 fx.register('interiorCam', { desktop: true, low: true });
 
-/** First-visit breadcrumb length. createArrivalTrail builds one Mesh per coin
- *  (geometry and material are shared). */
+/** First-visit breadcrumb length. createArrivalTrail records one coin per
+ *  step; buildCoinInstances draws them (B9). */
 const ARRIVAL_TRAIL_COINS = 5;
+/** Seeded draws the old coin geometry and material took before the loop, as
+ *  the census MEASURED them (gameSceneSeed: 588 = 8 + 80 × 7 + 20). B9 builds
+ *  no objects in the window, so createCoins burns them at the same site. */
+const COIN_SHARED_DRAWS = 8;
+/** Seeded draws one coin Mesh took (its uuid), after the coin's three jitter
+ *  draws; the same for each arrival-trail coin. Measured, as above. */
+const COIN_MESH_DRAWS = 4;
+/** Pooled pickup sparkles: extra instances of the coin mesh itself (B9). */
+const COIN_SPARKLES = 6;
+
+/** A coin on the ground (B9). Records replace the per-coin Meshes, which now
+ *  draw as one InstancedMesh (buildCoinInstances, outside the seeded window).
+ *  `mesh` is a plain stand-in kept for the probes that read
+ *  `coins[].mesh.{name,position,visible}`; its position IS `pos`. */
+interface CoinRecord {
+  pos: THREE.Vector3;
+  quat: THREE.Quaternion;
+  home: THREE.Vector3;
+  respawnAt: number;
+  trail?: boolean;
+  collectT0?: number;
+  idx: number;
+  spin: number;
+  mesh: { name: string; position: THREE.Vector3; visible: boolean };
+}
+
+fx.register('coinGlint', { desktop: true, low: false });
 /** Seeded draws the trail's Meshes take, as the census MEASURED them
  *  (test/gameSceneSeed.test.ts: with this burn, a returning visitor's coins
  *  span equals a first visitor's 588). A returning visitor's skipped trail
@@ -358,6 +385,15 @@ export class GameScene extends THREE.Scene {
   private readonly _npcLimbQ = new THREE.Quaternion();
   private static readonly AXIS_X = new THREE.Vector3(1, 0, 0);
   private static readonly AXIS_Y = new THREE.Vector3(0, 1, 0);
+  /** Feet in the player group's local frame: the GLB is seated with its sole
+   *  at −playerHeight (SimplePlayer.loadGLTFCharacter). Juice.squash pivots
+   *  there (B4). */
+  private static readonly PLAYER_FEET_Y = -0.7;
+  /** The camera direction handed to the waving avatar (B6). */
+  private readonly _waveLook = new THREE.Vector3();
+  /** A cat's paws, ~0.12 below its origin (buildCat's leg comment). */
+  private static readonly CAT_FEET_Y = -0.12;
+  private readonly _catSquashOff = new THREE.Vector3();
 
   // Cats prowling the grass near the villages: they sit, stroll to a nearby
   // spot, step away if you crowd them, and trot in to eat thrown cat treats.
@@ -675,7 +711,12 @@ export class GameScene extends THREE.Scene {
   private guideRefreshAt: number = 0;
 
   // Collectible coins scattered across the meadows
-  private coins: Array<{ mesh: THREE.Mesh; respawnAt: number; trail?: boolean }> = [];
+  private coins: CoinRecord[] = [];
+  /** Every coin and the pickup sparkles, as one draw (B9). */
+  private coinMesh: THREE.InstancedMesh | null = null;
+  /** One additive glint quad per coin, desktop only (fx 'coinGlint'). */
+  private coinGlint: THREE.InstancedMesh | null = null;
+  private readonly coinSparks: Array<{ t0: number; at: THREE.Vector3; vel: THREE.Vector3 }> = [];
   private coinsCollected = 0;
   // Recent coin transactions for the receipt panel (last 24, newest last).
   private readonly txLog: Array<{ label: string; amount: number; t: number }> = [];
@@ -1291,6 +1332,10 @@ export class GameScene extends THREE.Scene {
       this.seedMark('restore');
       restoreRandom();
     }
+
+    // The coins' one InstancedMesh (B9): built here, after restoreRandom, from
+    // the transforms createCoins recorded inside the window.
+    this.buildCoinInstances();
 
     // Ring traffic. Deliberately constructed HERE, outside the seeded window:
     // three spends 4 Math.random draws per object on uuids, so building a
@@ -4082,7 +4127,8 @@ export class GameScene extends THREE.Scene {
     // shipped without it. The swish and the camera interest stay.
     if (!a11y.reducedMotion) {
       this.player?.triggerFeedToss();
-      if (this.player) squash(this.player, 0.07, 0.16);
+      if (this.player)
+        squash(this.player, 0.07, 0.16, { pivotY: GameScene.PLAYER_FEET_Y, mover: true });
     }
     sfx.toss();
     (this.feedFocusPos ??= new THREE.Vector3()).copy(pilePos);
@@ -4104,7 +4150,8 @@ export class GameScene extends THREE.Scene {
     this.floatCoins(providerPos.clone().addScaledVector(up, 1.0), opts.coins);
     if (!a11y.reducedMotion) {
       this.player?.triggerFeedToss();
-      if (this.player) squash(this.player, 0.06, 0.15);
+      if (this.player)
+        squash(this.player, 0.06, 0.15, { pivotY: GameScene.PLAYER_FEET_Y, mover: true });
       const pops = Math.min(1 + Math.floor(opts.coins / 12), 3);
       for (let k = 0; k < pops; k++) {
         window.setTimeout(
@@ -4131,7 +4178,8 @@ export class GameScene extends THREE.Scene {
   public showEatGesture(): void {
     if (!this.player) return;
     const p = this.player.getWorldPosition();
-    if (!a11y.reducedMotion) squash(this.player, 0.06, 0.15);
+    if (!a11y.reducedMotion)
+      squash(this.player, 0.06, 0.15, { pivotY: GameScene.PLAYER_FEET_Y, mover: true });
     const head = p.clone().addScaledVector(p.clone().normalize(), 1.5);
     this.spawnDust(head, 3);
     this.setInteractionFocus(p, 1.6);
@@ -4824,7 +4872,7 @@ export class GameScene extends THREE.Scene {
             c.analBase = s.radius;
             c.mode = 'eat';
             // A happy little arrival pounce (root scale only, restores exactly)
-            squash(c.cat, 0.16, 0.22);
+            squash(c.cat, 0.16, 0.22, { pivotY: GameScene.CAT_FEET_Y, mover: true });
           } else {
             c.mode = 'sit';
             c.stateUntil = time + 2 + Math.random() * 4;
@@ -4912,6 +4960,10 @@ export class GameScene extends THREE.Scene {
       if (eatCrouch > 0) c.cat.rotateX(eatCrouch); // nose-down body pitch into the food
       const roll = Math.sin(time * cadence * 0.5 + c.phase) * 0.05 * c.gait;
       if (roll !== 0) c.cat.rotateZ(roll);
+      // The pounce's foot pivot (B4), after this frame's position and
+      // orientation writes: Juice ticks before this loop.
+      const sq = squashPivot(c.cat, this._catSquashOff);
+      if (sq) c.cat.position.add(sq);
     }
   }
 
@@ -9619,14 +9671,10 @@ export class GameScene extends THREE.Scene {
   /** A meadow or arrival-trail coin picked up at `time` (the coin loop in
    *  update): the ceremony starts, the count, the save, the HUD and the
    *  meadow-coin hook (P2-B7). */
-  private collectMeadowCoin(
-    c: { mesh: THREE.Mesh; respawnAt: number; trail?: boolean },
-    time: number,
-  ): void {
-    const cu = c.mesh.userData as { homePos?: THREE.Vector3; collectT0?: number };
-    if (!cu.homePos) cu.homePos = c.mesh.position.clone();
-    cu.homePos.copy(c.mesh.position);
-    cu.collectT0 = time;
+  private collectMeadowCoin(c: CoinRecord, time: number): void {
+    // The pop starts where the magnet left the coin (B9).
+    c.home.copy(c.pos);
+    c.collectT0 = time;
     // 120s (was 45s): a 45s cycle made the meadow an infinite coin farm, so
     // hat prices were a timer, not a choice. Slower respawn makes race +
     // quest + delivery rewards the sane way to kit out. Arrival-trail
@@ -9659,8 +9707,42 @@ export class GameScene extends THREE.Scene {
     } catch {
       /* session-only counter */
     }
+    // B9 → D11: where the coin pops, in CSS px, before the count moves, so
+    // the HUD can fly a coin from there to the chip. Meadow and trail pickups
+    // only (this method), and under reduced motion too (D decides the flight).
+    this.dispatchCoinEvent(c);
     this.onCoinCollected?.(this.coinsCollected);
     this.onMeadowCoin?.({ trail: c.trail === true });
+  }
+
+  private readonly _coinNdc = new THREE.Vector3();
+  /** window 'ds:coin' {x, y, value: 1}: the pop point projected to CSS px,
+   *  always finite and on screen. With no camera, or a pop point behind it
+   *  (a pickup in the vehicle view with the camera turned away), it is the
+   *  screen centre; otherwise clamped to the viewport. D11's flight starts
+   *  there. */
+  private dispatchCoinEvent(c: CoinRecord): void {
+    const w = typeof window !== 'undefined' ? window.innerWidth : 0;
+    const h = typeof window !== 'undefined' ? window.innerHeight : 0;
+    let x = Math.round(w / 2);
+    let y = Math.round(h / 2);
+    const cam = this.camera as THREE.PerspectiveCamera | undefined;
+    if (cam) {
+      // The camera's matrices as of now (a frame may not have rendered since
+      // it moved).
+      cam.updateMatrixWorld();
+      const n = this._coinN.copy(c.home).normalize();
+      const v = this._coinNdc.copy(c.home).addScaledVector(n, GameScene.COIN_POP_RISE).project(cam);
+      if (v.z <= 1 && Number.isFinite(v.x) && Number.isFinite(v.y)) {
+        x = Math.round(THREE.MathUtils.clamp((v.x + 1) / 2, 0, 1) * w);
+        y = Math.round(THREE.MathUtils.clamp((1 - v.y) / 2, 0, 1) * h);
+      }
+    }
+    try {
+      window.dispatchEvent(new CustomEvent('ds:coin', { detail: { x, y, value: 1 } }));
+    } catch {
+      /* no window: nothing listens */
+    }
   }
 
   /** Fires at a meadow or arrival-trail coin pickup (P2-B7), never for coins
@@ -10435,9 +10517,11 @@ export class GameScene extends THREE.Scene {
     } catch {
       /* counter starts at 0 */
     }
-    const geo = new THREE.CylinderGeometry(0.16, 0.16, 0.045, 12);
-    const mat = new THREE.MeshToonMaterial({ color: 0xffd34a, gradientMap: Materials.toonRamp() });
-    mat.emissive = new THREE.Color(0x554411);
+    // B9: no objects inside the seeded window. The old shared geometry and
+    // material took COIN_SHARED_DRAWS here and each coin Mesh COIN_MESH_DRAWS
+    // after its jitter; the burns stand in for them at the same sites, so
+    // every builder after this draws what it drew before (gameSceneSeed).
+    burnDraws(COIN_SHARED_DRAWS);
     const golden = Math.PI * (3 - Math.sqrt(5));
     const dir = new THREE.Vector3();
     // Coins set the traversal REWARD CADENCE — how often you find one while
@@ -10457,17 +10541,413 @@ export class GameScene extends THREE.Scene {
         )
         .normalize();
       const sampled = this.island.sampleSurfaceByDirection(dir, 0);
-      const coin = new THREE.Mesh(geo, mat);
-      coin.position.copy(sampled.position).addScaledVector(sampled.normal, 0.35);
-      // Stand on edge, aligned to the surface
-      coin.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal);
-      coin.rotateX(Math.PI / 2);
-      coin.castShadow = true;
-      coin.name = `coin_${i}`;
-      this.add(coin);
-      this.coins.push({ mesh: coin, respawnAt: 0 });
+      burnDraws(COIN_MESH_DRAWS);
+      this.coins.push(GameScene.coinRecord(sampled, `coin_${i}`, this.coins.length));
     }
-    this.createArrivalTrail(geo, mat);
+    this.createArrivalTrail();
+  }
+
+  /** A coin's record at a surface sample: 0.35 u up the normal, standing on
+   *  its edge (the old Mesh's setFromUnitVectors + rotateX(π/2), op for op,
+   *  so the placement digest is byte-identical). */
+  private static coinRecord(
+    sampled: { position: THREE.Vector3; normal: THREE.Vector3 },
+    name: string,
+    idx: number,
+    trail?: boolean,
+  ): CoinRecord {
+    const pos = sampled.position.clone().addScaledVector(sampled.normal, 0.35);
+    const quat = GameScene.coinQuat(new THREE.Quaternion(), sampled.normal);
+    const rec: CoinRecord = {
+      pos,
+      quat,
+      home: pos.clone(),
+      respawnAt: 0,
+      idx,
+      spin: 0,
+      mesh: { name, position: pos, visible: true },
+    };
+    if (trail) rec.trail = true;
+    return rec;
+  }
+
+  private static readonly _coinEdge = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(1, 0, 0),
+    Math.PI / 2,
+  );
+  private static coinQuat(out: THREE.Quaternion, normal: THREE.Vector3): THREE.Quaternion {
+    return out.setFromUnitVectors(GameScene.AXIS_Y, normal).multiply(GameScene._coinEdge);
+  }
+
+  /** Six sparkles out of a pickup's pop point (B9), reusing the pool. */
+  private spawnCoinSparks(c: CoinRecord, time: number): void {
+    const n = this._coinN.copy(c.home).normalize();
+    const at = this._coinP.copy(c.home).addScaledVector(n, GameScene.COIN_POP_RISE);
+    const t1 = this._coinS.set(1, 0, 0);
+    if (Math.abs(n.x) > 0.9) t1.set(0, 0, 1);
+    t1.addScaledVector(n, -t1.dot(n)).normalize();
+    for (let j = 0; j < COIN_SPARKLES; j++) {
+      const sp = (this.coinSparks[j] ??= {
+        t0: 0,
+        at: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+      });
+      sp.t0 = time;
+      const a = (j / COIN_SPARKLES) * Math.PI * 2;
+      const out = this._coinCam.copy(t1).applyAxisAngle(n, a);
+      // Start clear of the popped disc (radius 0.3 x 1.35): sparkles born at
+      // its centre showed their rims through its face as a dark squiggle.
+      sp.at.copy(at).addScaledVector(out, GameScene.COIN_SPARK_START);
+      sp.vel.copy(out).multiplyScalar(1.6).addScaledVector(n, 1.4);
+    }
+  }
+
+  /** How far from the pop point a sparkle starts, u: outside the popped
+   *  disc (0.3 x 1.35 = 0.405) plus a sparkle's own radius (0.3 x 0.28). */
+  static readonly COIN_SPARK_START = 0.55;
+
+  /** How far the pop rises along the normal, u (B9). */
+  private static readonly COIN_POP_RISE = 1.75;
+
+  /**
+   * The coins' one InstancedMesh (B9), built after restoreRandom: a chamfered
+   * disc 0.30 u across and 0.06 u thick (1.9x the old 0.16/0.045, so a coin
+   * reads at the chase distance), face #ffd34a and rim #c9962a in vertex
+   * colour on the shared toon ramp, no ink. One instance per coin plus the
+   * pooled pickup sparkles; a collected coin is instance scale 0. The glint
+   * is one additive quad per coin, desktop only (fx 'coinGlint').
+   */
+  private buildCoinInstances(): void {
+    if (this.coinMesh || this.coins.length === 0) return;
+    const R = 0.3;
+    const C = 0.27; // where the face meets the chamfer
+    const H = 0.03;
+    const E = 0.012; // the rim band's half height
+    const SEG = 16;
+    const face = new THREE.Color(0xffd34a);
+    const rim = new THREE.Color(0xc9962a);
+    const paint = (g: THREE.BufferGeometry, col: THREE.Color) => {
+      const n = g.attributes.position.count;
+      const arr = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) col.toArray(arr, i * 3);
+      g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+      return g;
+    };
+    const top = new THREE.CircleGeometry(C, SEG).rotateX(-Math.PI / 2).translate(0, H, 0);
+    const bottom = new THREE.CircleGeometry(C, SEG).rotateX(Math.PI / 2).translate(0, -H, 0);
+    const band = new THREE.CylinderGeometry(R, R, 2 * E, SEG, 1, true);
+    const upper = new THREE.CylinderGeometry(C, R, H - E, SEG, 1, true).translate(
+      0,
+      (H + E) / 2,
+      0,
+    );
+    const lower = new THREE.CylinderGeometry(R, C, H - E, SEG, 1, true).translate(
+      0,
+      -(H + E) / 2,
+      0,
+    );
+    const geo = GameScene.mergeOrThrow(
+      [
+        paint(top, face),
+        paint(bottom, face),
+        paint(band, rim),
+        paint(upper, rim),
+        paint(lower, rim),
+      ],
+      'coin',
+    );
+    for (const g of [top, bottom, band, upper, lower]) g.dispose();
+    const mat = new THREE.MeshToonMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      gradientMap: Materials.toonRamp(),
+    });
+    mat.emissive = new THREE.Color(0x554411);
+    const count = this.coins.length + COIN_SPARKLES;
+    const mesh = new THREE.InstancedMesh(geo, mat, count);
+    mesh.name = 'coins';
+    mesh.frustumCulled = false; // one draw spread over the whole island
+    mesh.castShadow = !SimpleRenderer.isLowTierDevice();
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.coinMesh = mesh;
+    this.add(mesh);
+    if (fx.on('coinGlint')) {
+      const tex = GameScene.glintTexture();
+      const glint = new THREE.InstancedMesh(
+        new THREE.PlaneGeometry(0.9, 0.9),
+        new THREE.MeshBasicMaterial({
+          map: tex,
+          color: 0xfff2b0,
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+        this.coins.length,
+      );
+      glint.name = 'coinGlint';
+      glint.frustumCulled = false;
+      glint.castShadow = false;
+      glint.receiveShadow = false;
+      glint.renderOrder = 2;
+      glint.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.coinGlint = glint;
+      this.add(glint);
+    }
+    this.writeCoinInstances(0, this.camera?.quaternion ?? null);
+  }
+
+  /**
+   * A soft four-point star, 64 px: the glint's sprite. Written as a
+   * DataTexture, not a canvas, so it adds no CanvasTexture: the census row
+   * that counts C7's removed facade canvases read B9's glint as +1 against
+   * C7's -1 on desktop. Same picture as the canvas it replaces: a radial
+   * glow (white at the centre, warm 0.55 at 0.18, clear at the rim) under a
+   * 2 px cross at 0.9.
+   */
+  private static glintTexture(): THREE.Texture {
+    const tex = new THREE.DataTexture(
+      GameScene.glintPixels(),
+      GameScene.GLINT_PX,
+      GameScene.GLINT_PX,
+    );
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.magFilter = THREE.LinearFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
+    tex.needsUpdate = true;
+    return tex;
+  }
+  static readonly GLINT_PX = 64;
+  /** The glint sprite's RGBA bytes (straight alpha), row-major. */
+  static glintPixels(): Uint8Array {
+    const S = GameScene.GLINT_PX;
+    const out = new Uint8Array(S * S * 4);
+    const stops: Array<[number, number, number, number, number]> = [
+      [0, 255, 255, 255, 1],
+      [0.18, 255, 245, 200, 0.55],
+      [1, 255, 240, 180, 0],
+    ];
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const r = Math.hypot(x + 0.5 - S / 2, y + 0.5 - S / 2) / (S / 2);
+        let k = 0;
+        while (k < stops.length - 2 && r > stops[k + 1][0]) k++;
+        const [r0, ...a] = stops[k];
+        const [r1, ...b] = stops[k + 1];
+        const t = THREE.MathUtils.clamp((r - r0) / (r1 - r0), 0, 1);
+        let cr = a[0] + (b[0] - a[0]) * t;
+        let cg = a[1] + (b[1] - a[1]) * t;
+        let cb = a[2] + (b[2] - a[2]) * t;
+        let ca = a[3] + (b[3] - a[3]) * t;
+        const bar =
+          (x >= S / 2 - 1 && x < S / 2 + 1 && y >= 4 && y < S - 4) ||
+          (y >= S / 2 - 1 && y < S / 2 + 1 && x >= 4 && x < S - 4);
+        if (bar) {
+          // White at 0.9 over the glow (source-over, straight alpha).
+          const oa = 0.9 + ca * 0.1;
+          cr = (255 * 0.9 + cr * ca * 0.1) / oa;
+          cg = (255 * 0.9 + cg * ca * 0.1) / oa;
+          cb = (255 * 0.9 + cb * ca * 0.1) / oa;
+          ca = oa;
+        }
+        const i = (y * S + x) * 4;
+        out[i] = Math.round(cr);
+        out[i + 1] = Math.round(cg);
+        out[i + 2] = Math.round(cb);
+        out[i + 3] = Math.round(ca * 255);
+      }
+    }
+    return out;
+  }
+
+  private readonly _coinM = new THREE.Matrix4();
+  private readonly _coinQ = new THREE.Quaternion();
+  private readonly _coinS = new THREE.Vector3();
+  private readonly _coinP = new THREE.Vector3();
+  private readonly _coinN = new THREE.Vector3();
+  private readonly _coinSpinQ = new THREE.Quaternion();
+  private static readonly _zeroScale = new THREE.Matrix4().makeScale(0, 0, 0);
+  private readonly _coinCam = new THREE.Vector3();
+
+  /** The popped coin's widest on-screen size, CSS px (B9): about two thirds
+   *  of the desktop chase-view head. */
+  static readonly COIN_POP_MAX_PX = 64;
+  /** ...and at most this share of the viewport's shorter side: on a 390 px
+   *  phone 64 px was wider than the head (39 px is two thirds of it). */
+  static readonly COIN_POP_MAX_FRAC = 0.1;
+  /** A sparkle's cap, as a share of the popped coin's. */
+  static readonly COIN_SPARK_PX_FRAC = 0.25;
+  /** The coin disc's diameter at scale 1, u (buildCoinInstances' R x 2). */
+  private static readonly COIN_DIAMETER = 0.6;
+
+  /** The popped coin's on-screen cap for a `viewW` x `viewH` viewport, px. */
+  static coinPopMaxPx(viewW: number, viewH: number): number {
+    return Math.min(
+      GameScene.COIN_POP_MAX_PX,
+      GameScene.COIN_POP_MAX_FRAC * Math.min(viewW > 0 ? viewW : Infinity, viewH),
+    );
+  }
+
+  /**
+   * The popped coin's pose (B9): `outQ` turns the disc's face (its local +Y)
+   * to the camera, so it never pops edge-on, and the returned scale is
+   * `scale` capped so the disc spans at most `frac` x coinPopMaxPx of a
+   * `viewW` x `viewH` px viewport. With no viewport (viewH 0) only the
+   * facing applies. The sparkles take the same pose at COIN_SPARK_PX_FRAC.
+   */
+  static coinPopFit(
+    at: THREE.Vector3,
+    camPos: THREE.Vector3,
+    fovDeg: number,
+    viewW: number,
+    viewH: number,
+    scale: number,
+    outQ: THREE.Quaternion,
+    frac = 1,
+  ): number {
+    const toCam = GameScene._popDir.copy(camPos).sub(at);
+    const d = toCam.length();
+    if (d > 1e-6) outQ.setFromUnitVectors(GameScene.AXIS_Y, toCam.multiplyScalar(1 / d));
+    else outQ.identity();
+    if (!(viewH > 0) || !(fovDeg > 0) || d <= 1e-6) return scale;
+    const pxPerU = viewH / (2 * d * Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2));
+    const cap = (frac * GameScene.coinPopMaxPx(viewW, viewH)) / (GameScene.COIN_DIAMETER * pxPerU);
+    return Math.min(scale, cap);
+  }
+  private static readonly _popDir = new THREE.Vector3();
+
+  /**
+   * Write every coin's instance (B9): position (plus the pop's rise), the
+   * spin about its normal on top of the placement quaternion, and the scale
+   * (0 once collected). Then the pickup sparkles and the glint quads.
+   */
+  private writeCoinInstances(time: number, camQ: THREE.Quaternion | null): void {
+    const mesh = this.coinMesh;
+    if (!mesh) return;
+    const reduced = a11y.reducedMotion;
+    const cam = this.camera as THREE.PerspectiveCamera | undefined;
+    const hasWin = typeof window !== 'undefined';
+    const viewW = hasWin ? window.innerWidth : 0;
+    const viewH = hasWin ? window.innerHeight : 0;
+    const camPos = cam ? cam.getWorldPosition(this._coinCam) : null;
+    for (const rec of this.coins) {
+      let scale = rec.mesh.visible ? 1 : 0;
+      const p = this._coinP.copy(rec.pos);
+      const n = this._coinN.copy(rec.home).normalize();
+      if (typeof rec.collectT0 === 'number') {
+        const ct = Math.max(0, time - rec.collectT0);
+        if (reduced) {
+          // Reduced motion: shrink away in place over 150 ms.
+          scale = Math.max(0, 1 - ct / 0.15);
+          p.copy(rec.home);
+        } else {
+          // The pop: up 1.75 u and 1 → 1.35 in 90 ms, hang above the head,
+          // then shrink away by 450 ms.
+          const u = Math.min(1, ct / 0.09);
+          const rise =
+            GameScene.COIN_POP_RISE * (1 - (1 - u) * (1 - u)) + 0.3 * Math.max(0, ct - 0.09);
+          p.copy(rec.home).addScaledVector(n, rise);
+          scale = (1 + 0.35 * u) * (ct < 0.38 ? 1 : Math.max(0, 1 - (ct - 0.38) / 0.07));
+        }
+        // Face the camera and keep to coinPopMaxPx on screen: a pickup
+        // next to the camera popped edge-on as a slab across a villager.
+        if (cam && camPos && scale > 0) {
+          scale = GameScene.coinPopFit(p, camPos, cam.fov, viewW, viewH, scale, this._coinQ);
+          this._coinS.setScalar(scale);
+          mesh.setMatrixAt(
+            rec.idx,
+            scale > 0 ? this._coinM.compose(p, this._coinQ, this._coinS) : GameScene._zeroScale,
+          );
+          continue;
+        }
+      }
+      this._coinSpinQ.setFromAxisAngle(n, rec.spin);
+      this._coinQ.copy(rec.quat).premultiply(this._coinSpinQ);
+      this._coinS.setScalar(scale);
+      mesh.setMatrixAt(
+        rec.idx,
+        scale > 0 ? this._coinM.compose(p, this._coinQ, this._coinS) : GameScene._zeroScale,
+      );
+    }
+    // Sparkles: small coins flung out of the pop, falling back, 0.5 s.
+    const base = this.coins.length;
+    for (let j = 0; j < COIN_SPARKLES; j++) {
+      const sp = this.coinSparks[j];
+      const age = sp ? time - sp.t0 : Infinity;
+      if (!sp || age >= 0.5 || age < 0) {
+        mesh.setMatrixAt(base + j, GameScene._zeroScale);
+        continue;
+      }
+      const n = this._coinN.copy(sp.at).normalize();
+      this._coinP
+        .copy(sp.at)
+        .addScaledVector(sp.vel, age)
+        .addScaledVector(n, -4 * age * age);
+      // Face-on to the camera like the pop, and capped to a share of it:
+      // spun about the normal they read as edge-on brown dashes.
+      let s = 0.28 * (1 - age / 0.5);
+      if (cam && camPos) {
+        s = GameScene.coinPopFit(
+          this._coinP,
+          camPos,
+          cam.fov,
+          viewW,
+          viewH,
+          s,
+          this._coinQ,
+          GameScene.COIN_SPARK_PX_FRAC,
+        );
+      } else this._coinQ.setFromAxisAngle(n, age * 30 + j);
+      this._coinS.setScalar(s);
+      mesh.setMatrixAt(base + j, this._coinM.compose(this._coinP, this._coinQ, this._coinS));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    const glint = this.coinGlint;
+    if (glint) {
+      const on = fx.on('coinGlint') && camQ !== null;
+      glint.visible = on;
+      if (on) {
+        this.glintTime = time;
+        this.glintCamQ = camQ;
+        fx.time('coinGlint', this.boundCoinGlint);
+      }
+    }
+  }
+
+  /**
+   * The coins' InstancedMesh and glint quads skip frustum culling (one draw
+   * spread over the island), so in a room at y -300 they still drew: lowtier
+   * room draws read 73 against main's 72. enterInterior hides them and
+   * exitInterior shows them; the glint's own per-frame switch runs only
+   * outdoors (update returns early into the interior mode).
+   */
+  private showCoins(on: boolean): void {
+    if (this.coinMesh) this.coinMesh.visible = on;
+    if (this.coinGlint) this.coinGlint.visible = on && fx.on('coinGlint');
+  }
+
+  private glintTime = 0;
+  private glintCamQ: THREE.Quaternion | null = null;
+  private readonly boundCoinGlint = (): void => this.writeCoinGlints();
+  /** Glints (fx 'coinGlint'): a camera-facing flash that wanders across the
+   *  coins, staggered so a few twinkle at a time. */
+  private writeCoinGlints(): void {
+    const glint = this.coinGlint;
+    const camQ = this.glintCamQ;
+    const time = this.glintTime;
+    if (!glint || !camQ) return;
+    for (const rec of this.coins) {
+      const ph = (time * 0.6 + rec.idx * 0.618) % 1;
+      const flash = ph < 0.12 ? Math.sin((ph / 0.12) * Math.PI) : 0;
+      const vis = rec.mesh.visible && typeof rec.collectT0 !== 'number' && flash > 0.01;
+      if (!vis) {
+        glint.setMatrixAt(rec.idx, GameScene._zeroScale);
+        continue;
+      }
+      this._coinS.setScalar(flash);
+      glint.setMatrixAt(rec.idx, this._coinM.compose(rec.pos, camQ, this._coinS));
+    }
+    glint.instanceMatrix.needsUpdate = true;
   }
 
   /**
@@ -10478,7 +10958,7 @@ export class GameScene extends THREE.Scene {
    * visit only; trail coins never respawn; the first one collected marks the
    * visit (ds_arrived), and finishing the trail fires onArrivalTrail.
    */
-  private createArrivalTrail(geo: THREE.BufferGeometry, mat: THREE.Material): void {
+  private createArrivalTrail(): void {
     const spawnDir = GameScene.SPAWN_DIR; // matches player spawn
     // Nearest villager to the spawn who talks through the chat (isAiNpc):
     // the trail ends at a conversation, never at one of the villagers with
@@ -10525,14 +11005,9 @@ export class GameScene extends THREE.Scene {
       step.copy(idQ).slerp(q, t);
       dir.copy(spawnDir).applyQuaternion(step).normalize();
       const sampled = this.island.sampleSurfaceByDirection(dir, 0);
-      const coin = new THREE.Mesh(geo, mat);
-      coin.position.copy(sampled.position).addScaledVector(sampled.normal, 0.35);
-      coin.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal);
-      coin.rotateX(Math.PI / 2);
-      coin.castShadow = true;
-      coin.name = `trail_coin_${i}`;
-      this.add(coin);
-      this.coins.push({ mesh: coin, respawnAt: 0, trail: true });
+      // B9: the trail coin's Mesh took COIN_MESH_DRAWS (measured).
+      burnDraws(COIN_MESH_DRAWS);
+      this.coins.push(GameScene.coinRecord(sampled, `trail_coin_${i}`, this.coins.length, true));
       this.trailCoinsLeft++;
     }
   }
@@ -11658,6 +12133,17 @@ export class GameScene extends THREE.Scene {
       this.gradeRealMaterials();
     }
 
+    // B6: while the avatar waves, its head turns toward the camera, and the
+    // rod (parented to the waving arm) folds away. The rod's own visibility
+    // stays fishing's: the wave only scales it.
+    const waving = this.player.isWaving();
+    if (waving) {
+      this.player.setWaveLookDir(
+        this._waveLook.copy(this.camera.position).sub(this.player.position),
+      );
+    }
+    if (this.playerRod) this.playerRod.scale.setScalar(waving ? 1e-4 : 1);
+
     // Update player physics
     this.player.update(deltaTime);
     this.updateNearDoorWarm(deltaTime);
@@ -12360,7 +12846,7 @@ export class GameScene extends THREE.Scene {
             data.lastGreetAt = time;
             // Greet ceremony: a happy squash-stretch rides the existing hop
             // (root scale only — bones untouched, restores exactly).
-            squash(npc.meshRef, 0.14, 0.3);
+            squash(npc.meshRef, 0.14, 0.3, { pivotY: 0 });
             // Aware proximity greeting: AI townsfolk SPEAK first — a bubble +
             // voice line composed from live state (their planner-assigned
             // activity, the hour, the day-theme). Throttled per NPC; one
@@ -12598,23 +13084,17 @@ export class GameScene extends THREE.Scene {
       for (const s of this.guideSparkles) s.visible = false;
     }
 
-    // Coins: spin in place; on touch they fly up, spin fast, and shrink
-    // away (0.45s) before hiding; respawn after 45s
+    // Coins: spin in place; on touch they pop up above the head, hang, and
+    // shrink away (0.45 s; 150 ms in place under reduced motion); respawn
+    // after 120 s. Records, drawn as one InstancedMesh (B9).
     for (const c of this.coins) {
-      const cu = c.mesh.userData as { homePos?: THREE.Vector3; collectT0?: number };
-      if (typeof cu.collectT0 === 'number') {
-        const ct = time - cu.collectT0;
-        const home = cu.homePos as THREE.Vector3;
-        if (ct >= 0.45) {
+      if (typeof c.collectT0 === 'number') {
+        const ct = time - c.collectT0;
+        c.spin += deltaTime * 18;
+        if (ct >= (a11y.reducedMotion ? 0.15 : 0.45)) {
           c.mesh.visible = false;
-          delete cu.collectT0;
-          c.mesh.position.copy(home);
-          c.mesh.scale.setScalar(1);
-        } else {
-          this._npcNormal.copy(home).normalize();
-          c.mesh.position.copy(home).addScaledVector(this._npcNormal, ct * 2.4);
-          c.mesh.scale.setScalar(Math.max(0.01, 1 - ct / 0.45));
-          c.mesh.rotateOnWorldAxis(this._npcNormal, deltaTime * 18);
+          delete c.collectT0;
+          c.pos.copy(c.home);
         }
         continue;
       }
@@ -12640,32 +13120,34 @@ export class GameScene extends THREE.Scene {
             if (anchors.every((a) => dir.angleTo(a) > 0.2)) break;
           }
           const sampled = this.island.sampleSurfaceByDirection(dir, 0);
-          c.mesh.position.copy(sampled.position).addScaledVector(sampled.normal, 0.35);
-          c.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), sampled.normal);
-          c.mesh.rotateX(Math.PI / 2);
-          const cuR = c.mesh.userData as { homePos?: THREE.Vector3 };
-          if (cuR.homePos) cuR.homePos.copy(c.mesh.position);
+          c.pos.copy(sampled.position).addScaledVector(sampled.normal, 0.35);
+          GameScene.coinQuat(c.quat, sampled.normal);
+          c.home.copy(c.pos);
+          c.spin = 0;
           c.mesh.visible = true;
           c.respawnAt = 0;
         }
         continue;
       }
-      this._npcNormal.copy(c.mesh.position).normalize();
-      c.mesh.rotateOnWorldAxis(this._npcNormal, deltaTime * 2.5);
+      c.spin += deltaTime * 2.5;
       if (this.trailCoinWaits(c)) continue;
       // Magnet: within ~2.1u the coin leans toward the player — the pickup
       // starts ANSWERING before it lands (anticipation beat of the ceremony).
       // Near-misses ease back to their seat so no coin is left stranded.
-      const d2 = c.mesh.position.distanceToSquared(playerPos);
+      // (c.mesh.position IS c.pos: the record's probe-facing stand-in.)
+      const d2 = c.pos.distanceToSquared(playerPos);
       if (d2 < 4.4 && d2 >= 0.9) {
-        if (!cu.homePos) cu.homePos = c.mesh.position.clone();
         const pull = (1 - d2 / 4.4) * 4.5 * deltaTime;
         c.mesh.position.lerp(playerPos, Math.min(0.25, pull));
-      } else if (d2 >= 4.4 && cu.homePos && c.mesh.position.distanceToSquared(cu.homePos) > 1e-4) {
-        c.mesh.position.lerp(cu.homePos, Math.min(1, 6 * deltaTime));
+      } else if (d2 >= 4.4 && c.pos.distanceToSquared(c.home) > 1e-4) {
+        c.pos.lerp(c.home, Math.min(1, 6 * deltaTime));
       }
-      if (d2 < 0.9) this.collectMeadowCoin(c, time);
+      if (d2 < 0.9) {
+        this.collectMeadowCoin(c, time);
+        if (!a11y.reducedMotion) this.spawnCoinSparks(c, time);
+      }
     }
+    this.writeCoinInstances(time, this.camera ? this.camera.quaternion : null);
 
     // Day/night handoff for the small life: butterflies by day,
     // blinking fireflies wandering the flower clusters by night
@@ -13756,7 +14238,7 @@ export class GameScene extends THREE.Scene {
       }
       if (target) {
         (target.meshRef.userData as { greetT0?: number }).greetT0 = performance.now() / 1000;
-        squash(target.meshRef, 0.12, 0.26);
+        squash(target.meshRef, 0.12, 0.26, { pivotY: 0 });
         // Soft camera interest toward whoever you addressed — carries the
         // shop moment (chat NPCs suspend the orbit cam a beat later anyway).
         this.setInteractionFocus(
@@ -16592,6 +17074,7 @@ export class GameScene extends THREE.Scene {
     // the freeze with the quality governor's rung 2 — the old save/restore of
     // the raw field fought the governor (see restoreShadowAutoUpdate).
     this.rendererRef?.setShadowFreeze?.(true);
+    this.showCoins(false);
     // Aim the window's camera BEFORE the player's visual group is teleported
     // into the room — getWorldPosition() is still the doorstep they walked to.
     this.aimInteriorOutlook();
@@ -17086,6 +17569,7 @@ export class GameScene extends THREE.Scene {
     this.setPartyMode(false); // guests go home; the wander loop re-claims them
     this.sendPartyGuestsHome(); // …including any the party let go indoors
     if (this.interiorGroup) this.interiorGroup.visible = false;
+    this.showCoins(true);
     this.interiorHotspot = null;
     // Hand the island its light rig back, exactly as it was left (P2-B9).
     this.restoreOutdoorRig();
@@ -17630,6 +18114,33 @@ export class GameScene extends THREE.Scene {
   ): { idx: number; n: number; kind: 'land' | 'water' } | null {
     return this.races?.getNextGate(out) ?? null;
   }
+
+  /** The nearest unoccupied vehicle of `kind` anywhere on the island, from
+   *  the player, written into `out` with no allocation and no draws; null
+   *  when none is free. Occupied covers the player's own ride and every craft
+   *  a peer holds. A's race compass (wave 4, P2-A8) reads it as
+   *  `scene.nearestVehiclePos?.('car', out) ?? null`. */
+  public nearestVehiclePos(
+    kind: 'car' | 'boat' | 'jetski',
+    out: THREE.Vector3,
+  ): THREE.Vector3 | null {
+    const vs = this.vehicles;
+    if (!vs || vs.length === 0 || !this.player) return null;
+    const p = this.player.getWorldPositionInto(this._nearVehP);
+    let best = -1;
+    let bestD2 = Infinity;
+    for (let i = 0; i < vs.length; i++) {
+      const v = vs[i];
+      if (v.kind !== kind || v.occupied) continue;
+      const d2 = v.group.position.distanceToSquared(p);
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = i;
+      }
+    }
+    return best < 0 ? null : out.copy(vs[best].group.position);
+  }
+  private readonly _nearVehP = new THREE.Vector3();
 
   /** Arm (or clear) a ?race=&beat= challenge target on the race HUD. */
   public setRaceChallenge(kind: 'land' | 'water', ms: number | null): void {

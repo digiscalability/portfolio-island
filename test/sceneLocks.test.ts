@@ -874,6 +874,54 @@ describe('the race compass reads the next gate (P2-B7)', () => {
   });
 });
 
+describe('the race compass finds a parked car (contract B to A, P2-A8)', () => {
+  type Near = (kind: 'car' | 'boat' | 'jetski', out: THREE.Vector3) => THREE.Vector3 | null;
+  const near = (GameScene.prototype as unknown as { nearestVehiclePos: Near }).nearestVehiclePos;
+  const veh = (kind: 'car' | 'boat' | 'jetski', x: number, occupied = false) => {
+    const group = new THREE.Group();
+    group.position.set(x, 0, 0);
+    return { kind, group, occupied };
+  };
+  const stub = (vehicles: unknown[], at = 0) =>
+    Object.assign(Object.create(GameScene.prototype), {
+      vehicles,
+      _nearVehP: new THREE.Vector3(),
+      player: { getWorldPositionInto: (o: THREE.Vector3) => o.set(at, 0, 0) },
+    });
+
+  test('the nearest free car of that kind, written into out', () => {
+    const s = stub([
+      veh('car', 50),
+      veh('boat', 1),
+      veh('car', 3, true),
+      veh('car', 9),
+      veh('car', -20),
+    ]);
+    const out = new THREE.Vector3(7, 7, 7);
+    const r = near.call(s, 'car', out);
+    expect(r).toBe(out);
+    expect(out.toArray()).toEqual([9, 0, 0]);
+    expect(near.call(s, 'boat', out)?.x).toBe(1);
+  });
+
+  test('null when none of that kind is free, and out is untouched', () => {
+    const out = new THREE.Vector3(7, 7, 7);
+    expect(near.call(stub([veh('car', 2, true), veh('boat', 1)]), 'car', out)).toBeNull();
+    expect(near.call(stub([veh('car', 2)]), 'jetski', out)).toBeNull();
+    expect(near.call(stub([]), 'car', out)).toBeNull();
+    expect(out.toArray()).toEqual([7, 7, 7]);
+  });
+
+  test('no allocation and no draws in its body', () => {
+    const s = stripped('GameScene.ts');
+    const body = bodyOf(s, 'public nearestVehiclePos(');
+    expect(body).not.toMatch(
+      /new THREE\.|\.clone\(\)|Math\.random|seededRandom|getWorldPosition\(\)/,
+    );
+    expect(body).toContain('v.occupied');
+  });
+});
+
 describe('the bird feed says why it did not throw (P2-B7)', () => {
   test("throwBirdFeed stays a boolean over throwBirdFeedReason's 'ok'", () => {
     const s = stripped('GameScene.ts');

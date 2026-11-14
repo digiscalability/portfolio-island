@@ -236,3 +236,258 @@ describe('the swim stroke is a front crawl, measured on player.glb', () => {
     peer.dispose();
   });
 });
+
+// ── Swimming without pops (B5) ──────────────────────────────────────────────
+// MOT-08 measured one-frame limb or pitch changes of 126° at entry, 136° at a
+// dive, 48° at a turn-back and 151° at the exit: the swim pose switched on and
+// off in one frame, the tread/stroke gate was a hard 0.4 u/s, and the exit
+// wrote `rotation.x = 0` on all four limbs (straight UP on this rig). Now the
+// pose blends from the clip by swimW and between tread and stroke by strokeW.
+
+interface SwimRig {
+  gltfModel: THREE.Group | null;
+}
+
+/** Quaternion angle between two orientations, degrees. */
+const angDeg = (a: THREE.Quaternion, b: THREE.Quaternion): number =>
+  (2 * Math.acos(Math.min(1, Math.abs(a.dot(b)))) * 180) / Math.PI;
+
+describe('swimming without pops (B5)', () => {
+  test(
+    'wade in, stroke, dive, turn back and walk out: no limb or pitch jumps 25° in a frame',
+    { timeout: 60000 },
+    async () => {
+      const player = new SimplePlayer();
+      const rig = player as unknown as SwimRig;
+      await vi.waitFor(
+        () => {
+          if (!rig.gltfModel) throw new Error('player.glb not loaded yet');
+        },
+        { timeout: 20000, interval: 20 },
+      );
+      const model = rig.gltfModel as THREE.Group;
+      const R = 100;
+      // Land to the west, sea to the east of x = 0.04 (seabed 2.5 u down).
+      const sea = (d: THREE.Vector3) => d.x > 0.04;
+      player.setPlanet(new THREE.Vector3(), R);
+      player.setGroundSampler((d) => (sea(d) ? R - 2.5 : R));
+      player.setWaterSampler((d) => ({ surface: R, isWater: sea(d) }));
+      player.setWorldPosition(new THREE.Vector3(0, R + 0.7, 0));
+      player.setSwimIntent(true);
+      const names = ['armL', 'armR', 'legL', 'legR'] as const;
+      const bones = names.map((n) => bone(model, n));
+      const prevQ = bones.map((b) => b.quaternion.clone());
+      const prevBody = new THREE.Quaternion();
+      const bodyQ = () => {
+        model.updateMatrixWorld(true);
+        return model
+          .getWorldQuaternion(new THREE.Quaternion())
+          .premultiply(player.getWorldQuaternion(new THREE.Quaternion()).invert());
+      };
+      prevBody.copy(bodyQ());
+      let worst = 0;
+      let where = '';
+      let wasIn = false;
+      let entered = false;
+      let exited = false;
+      const dir = new THREE.Vector3();
+      const step = (east: number, label: string) => {
+        const n = player.getSurfaceNormal();
+        dir.set(0, 0, -1).cross(n).normalize().multiplyScalar(east);
+        player.setMovementVector(dir);
+        if (east !== 0) player.setRotation(east > 0 ? Math.PI / 2 : -Math.PI / 2);
+        player.update(1 / 60);
+        if (player.isInWater() && !wasIn) entered = true;
+        if (!player.isInWater() && wasIn) exited = true;
+        wasIn = player.isInWater();
+        bones.forEach((b, i) => {
+          const d = angDeg(b.quaternion, prevQ[i]);
+          if (d > worst) {
+            worst = d;
+            where = `${label} ${names[i]}`;
+          }
+          prevQ[i].copy(b.quaternion);
+        });
+        const q = bodyQ();
+        const d = angDeg(q, prevBody);
+        if (d > worst) {
+          worst = d;
+          where = `${label} body`;
+        }
+        prevBody.copy(q);
+      };
+      for (let k = 0; k < 60; k++) step(0, 'stand');
+      for (let k = 0; k < 240; k++) step(1, 'wade in and stroke');
+      expect(entered, 'reached the water').toBe(true);
+      for (let k = 0; k < 60; k++) step(0.05, 'tread'); // under the 0.3 u/s gate
+      player.setDiveIntent(true);
+      for (let k = 0; k < 60; k++) step(1, 'dive');
+      player.setDiveIntent(false);
+      for (let k = 0; k < 120; k++) step(1, 'surface');
+      for (let k = 0; k < 600; k++) step(-1, 'turn back and walk out');
+      expect(exited, 'walked out').toBe(true);
+      for (let k = 0; k < 60; k++) step(0, 'stand');
+      expect(worst, `largest one-frame change (deg), at ${where}`).toBeLessThan(25);
+    },
+  );
+
+  test(
+    'local and peer hands trace the same stroke (within 0.02 u)',
+    { timeout: 30000 },
+    async () => {
+      const player = new SimplePlayer();
+      const swimmer = player as unknown as LocalSwimmer;
+      await vi.waitFor(
+        () => {
+          if (!swimmer.gltfModel) throw new Error('player.glb not loaded yet');
+        },
+        { timeout: 20000, interval: 20 },
+      );
+      const peer = await SimplePlayer.createRemoteAvatar();
+      expect(peer).not.toBeNull();
+      if (!peer) return;
+      const model = swimmer.gltfModel as THREE.Group;
+      const hands = { L: handVerts(model, 'armL'), R: handVerts(model, 'armR') };
+      const peerHands = { L: handVerts(peer.body, 'armL'), R: handVerts(peer.body, 'armR') };
+      const local = () => swimmer.applySwimPose(1 / 240, true, 4.4);
+      peer.setPose(1);
+      peer.setSwimMotion(0, 4.4);
+      const remote = () => peer.update(1 / 240, 4.4);
+      for (let k = 0; k < 960; k++) {
+        local();
+        remote();
+      }
+      // Hand positions in each swimmer's own root frame, over 2 s of stroke.
+      const path = (root: THREE.Object3D, h: typeof hands, step: () => void) => {
+        const out: Record<'L' | 'R', THREE.Vector3[]> = { L: [], R: [] };
+        for (let k = 0; k < 480; k++) {
+          step();
+          root.updateMatrixWorld(true);
+          for (const side of ['L', 'R'] as const)
+            out[side].push(root.worldToLocal(centroid(h[side])));
+        }
+        return out;
+      };
+      const a = path(player, hands, local);
+      const b = path(peer.body, peerHands, remote);
+      // The clocks start from each rig's own arm angle, so compare the paths as
+      // shapes: every local sample lies within 0.02 u of the peer's path, and
+      // the other way round.
+      const hausdorff = (p: THREE.Vector3[], q: THREE.Vector3[]) =>
+        Math.max(...p.map((x) => Math.min(...q.map((y) => x.distanceTo(y)))));
+      for (const side of ['L', 'R'] as const) {
+        expect(hausdorff(a[side], b[side]), `${side} hand, local vs peer (u)`).toBeLessThan(0.02);
+        expect(hausdorff(b[side], a[side]), `${side} hand, peer vs local (u)`).toBeLessThan(0.02);
+      }
+      peer.dispose();
+    },
+  );
+});
+
+// ── A wave you can read from behind (B6) ────────────────────────────────────
+// The wave is an abduction composed on the arm's rest: the hand goes OUT and
+// up beside the head, where the chase camera behind the avatar sees it. The
+// local player and every peer run the same envelope (60 ms anticipation,
+// 220 ms raise with a 6% overshoot, 650 ms wag, 300 ms lower).
+
+describe('a wave you can read from behind (B6)', () => {
+  async function wavers() {
+    const player = new SimplePlayer();
+    const swimmer = player as unknown as LocalSwimmer;
+    await vi.waitFor(
+      () => {
+        if (!swimmer.gltfModel) throw new Error('player.glb not loaded yet');
+      },
+      { timeout: 20000, interval: 20 },
+    );
+    const R = 100;
+    player.setPlanet(new THREE.Vector3(), R);
+    player.setWorldPosition(new THREE.Vector3(0, R + 0.7, 0));
+    const peer = await SimplePlayer.createRemoteAvatar();
+    if (!peer) throw new Error('createRemoteAvatar');
+    const model = swimmer.gltfModel as THREE.Group;
+    for (let k = 0; k < 120; k++) {
+      player.update(1 / 60);
+      peer.update(1 / 60, 0);
+    }
+    return { player, peer, model };
+  }
+
+  /** Hand height (u) in the root's own frame over the wave, at 240 Hz. */
+  function heights(root: THREE.Object3D, verts: ReturnType<typeof handVerts>, step: () => void) {
+    const out: number[] = [];
+    for (let k = 0; k < Math.round(1.25 * 240); k++) {
+      step();
+      root.updateMatrixWorld(true);
+      out.push(root.worldToLocal(centroid(verts)).y);
+    }
+    return out;
+  }
+
+  test('local and peer: the same hand-height curve within 0.02 u', { timeout: 30000 }, async () => {
+    const { player, peer, model } = await wavers();
+    const local = handVerts(model, 'armR');
+    const remote = handVerts(peer.body, 'armR');
+    const head = bone(model, 'head');
+    player.triggerWave();
+    peer.wave();
+    expect(player.isWaving()).toBe(true);
+    const a = heights(player, local, () => player.update(1 / 240));
+    const b = heights(peer.body, remote, () => peer.update(1 / 240, 0));
+    expect(player.isWaving()).toBe(false);
+    // Ten samples across the 1.23 s.
+    for (let i = 1; i <= 10; i++) {
+      const k = Math.min(a.length - 1, Math.round(((i * 1.23) / 10) * 240) - 1);
+      expect(Math.abs(a[k] - b[k]), `sample ${i} (t ${(k + 1) / 240} s)`).toBeLessThan(0.02);
+    }
+    // The hand is up beside the head through the hold: above the head bone.
+    player.triggerWave();
+    for (let k = 0; k < Math.round(0.5 * 240); k++) player.update(1 / 240);
+    player.updateMatrixWorld(true);
+    const hand = player.worldToLocal(centroid(local));
+    const headY = player.worldToLocal(head.getWorldPosition(new THREE.Vector3())).y;
+    expect(hand.y, 'hand above the head bone mid-wave').toBeGreaterThan(headY);
+    expect(Math.abs(hand.x), 'out to the side, clear of the head').toBeGreaterThan(0.3);
+    peer.dispose();
+  });
+
+  test('the curve: a dip, a 6% overshoot, then the wag', { timeout: 30000 }, async () => {
+    const { player, model } = await wavers();
+    const verts = handVerts(model, 'armR');
+    player.triggerWave();
+    const h = heights(player, verts, () => player.update(1 / 240));
+    const at = (t: number) => h[Math.round(t * 240) - 1];
+    const start = h[0];
+    // The 60 ms anticipation dips the hand below where it started.
+    expect(Math.min(...h.slice(0, Math.round(0.06 * 240))), 'the dip').toBeLessThan(start - 0.003);
+    // The raise overshoots the hold height (raise 1, no wag at t = 0.28 s).
+    const hold = at(0.28);
+    const peak = Math.max(...h.slice(Math.round(0.06 * 240), Math.round(0.28 * 240)));
+    expect(peak, 'the overshoot').toBeGreaterThan(hold + 0.01);
+    // The wag moves the hand through the hold.
+    const wag = h.slice(Math.round(0.3 * 240), Math.round(0.9 * 240));
+    expect(Math.max(...wag) - Math.min(...wag), 'the wag').toBeGreaterThan(0.05);
+    // And it ends back on the clip.
+    expect(Math.abs(h[h.length - 1] - start)).toBeLessThan(0.02);
+  });
+
+  test('reduced motion: no wag and no overshoot', { timeout: 30000 }, async () => {
+    const { a11y } = await import('../Accessibility');
+    const was = a11y.reducedMotion;
+    a11y.reducedMotion = true;
+    try {
+      const { player, model } = await wavers();
+      const verts = handVerts(model, 'armR');
+      player.triggerWave();
+      const h = heights(player, verts, () => player.update(1 / 240));
+      const hold = h[Math.round(0.5 * 240)];
+      const raise = h.slice(Math.round(0.06 * 240), Math.round(0.28 * 240));
+      // The idle clip still breathes the shoulder by a few mm.
+      expect(Math.max(...raise), 'no overshoot').toBeLessThanOrEqual(hold + 0.004);
+      const wag = h.slice(Math.round(0.3 * 240), Math.round(0.9 * 240));
+      expect(Math.max(...wag) - Math.min(...wag), 'no wag').toBeLessThan(0.005);
+    } finally {
+      a11y.reducedMotion = was;
+    }
+  });
+});
