@@ -1447,7 +1447,8 @@ kbd.kc {
 }
 .ds-controls-todo-done {
   flex: none;
-  color: #4ade80;
+  /* Light indigo, 9.8:1 on ink-900: green is the Work-with-me pill's alone. */
+  color: #b4bcff;
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;

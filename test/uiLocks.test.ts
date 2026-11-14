@@ -702,3 +702,113 @@ describe('C11 contract: the ChocoMate card declares 808 x 384', () => {
     expect(s).not.toMatch(/chocomate\.webp', '[^']*', 820,/);
   });
 });
+
+// Round 3 play, Abbas's ruling: green belongs to the Work-with-me pill alone.
+// The coin chip flashed #7fe08a on a gain (2026-08), the coin history printed
+// gains in the same green, the shop's 'Equipped' button was solid #2e7d32 and
+// the lessons sheet's 'Done' was #4ade80. Each now sits on the indigo/neutral
+// palette, and keeps AA (4.5:1) on the ink it is read against.
+describe('green only on Work with me (round 3 play)', () => {
+  const rgb = (c: string): [number, number, number] => {
+    const hex = /^#([0-9a-f]{6})$/i.exec(c.trim());
+    if (hex)
+      return [0, 2, 4].map((i) => parseInt(hex[1].slice(i, i + 2), 16)) as [number, number, number];
+    const m = /rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/i.exec(c);
+    if (!m) throw new Error(`not a colour: ${c}`);
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+  /** Hue 80-170 degrees at a saturation of 0.25 or more. */
+  const isGreen = (c: string): boolean => {
+    const [r, g, b] = rgb(c).map((v) => v / 255);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    if (max === 0 || d / max < 0.25 || max !== g) return false;
+    const hue = 60 * ((b - r) / d + 2);
+    return hue >= 80 && hue <= 170;
+  };
+  const lum = (c: string): number => {
+    const [r, g, b] = rgb(c).map((v) => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a: string, b: string): number => {
+    const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  };
+  let ui: SimpleUI | null = null;
+  afterEach(() => {
+    ui?.dispose();
+    ui = null;
+    document.body.innerHTML = '';
+  });
+  const make = (): SimpleUI => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    return ui;
+  };
+
+  test('the guard knows green when it sees it', () => {
+    for (const c of ['#7fe08a', '#2e7d32', '#4ade80', '#4CAF50', 'rgb(46, 125, 50)']) {
+      expect(isGreen(c)).toBe(true);
+    }
+    for (const c of ['#ffd34a', '#ff9a7a', '#c9d4ff', '#22304a', '#8fc1ff']) {
+      expect(isGreen(c)).toBe(false);
+    }
+  });
+
+  test('the coin chip flashes no green on a gain, and the history prints none', () => {
+    const u = make();
+    u.updateCoinCounter(5);
+    u.updateCoinCounter(15);
+    const chip = document.querySelector<HTMLElement>('[data-guide="coin-chip"]')!;
+    expect(chip.style.color).not.toBe('');
+    expect(isGreen(chip.style.color)).toBe(false);
+    expect(contrast(chip.style.color, '#0b1220')).toBeGreaterThanOrEqual(4.5);
+    u.showReceipt([{ label: 'Coin', amount: 1, t: Date.now() }]);
+    const amt = [...document.querySelectorAll<HTMLElement>('strong')].find((s) =>
+      s.textContent?.includes('+1'),
+    )!;
+    expect(isGreen(amt.style.color)).toBe(false);
+    expect(contrast(amt.style.color, '#0b1220')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("the shop's Equipped button is neutral, not green", () => {
+    const u = make();
+    u.showShop(
+      {
+        coins: 0,
+        items: [
+          {
+            id: 'tophat',
+            icon: '🎩',
+            name: 'Top hat',
+            price: 5,
+            category: 'hats',
+            equippable: true,
+            owned: true,
+            equipped: true,
+          },
+        ],
+      },
+      () => {},
+      () => {},
+    );
+    document.querySelector<HTMLElement>('button[data-shop-tab="hats"]')!.click();
+    const btn = document.querySelector<HTMLElement>('button[data-shop-id="tophat"]')!;
+    expect(btn.textContent).toBe('Equipped');
+    const bg = btn.style.background || btn.style.backgroundColor;
+    expect(isGreen(bg)).toBe(false);
+    expect(contrast(btn.style.color, bg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("the lessons sheet's Done reads in indigo, not green", () => {
+    const css = readFileSync(join(process.cwd(), 'style.css'), 'utf8').replace(/\r\n/g, '\n');
+    const rule = /\.ds-controls-todo-done \{([^}]*)\}/.exec(css)![1];
+    const color = /(?:^|\n)\s*color:\s*([^;]+);/.exec(rule)![1];
+    expect(isGreen(color)).toBe(false);
+    expect(contrast(color, '#101826')).toBeGreaterThanOrEqual(4.5);
+  });
+});

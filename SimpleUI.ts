@@ -2753,7 +2753,7 @@ export class SimpleUI {
             const amt = `${gain ? '+' : '−'}${Math.abs(e.amount)} 🪙`;
             return `<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 2px;border-top:1px solid rgba(255,255,255,0.08);font-size:14px;">
               <span style="opacity:.9">${esc(e.label)}</span>
-              <span style="white-space:nowrap"><strong style="color:${gain ? '#7fe08a' : '#ff9a7a'}">${amt}</strong>
+              <span style="white-space:nowrap"><strong style="color:${gain ? '#c9d4ff' : '#ff9a7a'}">${amt}</strong>
                 <span style="opacity:.5;font-size:12px;margin-left:8px">${ago(e.t)}</span></span>
             </div>`;
           })
@@ -8087,9 +8087,9 @@ export class SimpleUI {
             <div style="font-size:12px;color:${short && !it.owned ? '#e0a0a0' : '#aab'};line-height:1.35;">${subBits.join(' · ')}</div>
           </div>
           <button data-shop-id="${it.id}" ${disabled ? 'disabled' : ''} style="
-            background:${it.equipped || ownedTool ? '#2e7d32' : '#ffd34a'};
-            color:${it.equipped || ownedTool ? 'white' : '#332200'};
-            border:none;padding:10px 16px;border-radius:8px;font-weight:700;min-height:40px;white-space:nowrap;
+            background:${it.equipped || ownedTool ? DS.ink700 : '#ffd34a'};
+            color:${it.equipped || ownedTool ? DS.text1 : '#332200'};
+            border:${it.equipped || ownedTool ? `1px solid ${DS.lineStrong}` : 'none'};padding:10px 16px;border-radius:8px;font-weight:700;min-height:40px;white-space:nowrap;
             cursor:${disabled ? 'default' : 'pointer'};opacity:${disabled && !it.equipped && !ownedTool ? 0.45 : 1};
           ">${btnLabel}</button>
         </div>`;
@@ -8302,7 +8302,8 @@ export class SimpleUI {
     }
     const el = this.coinDiv;
     // Amount-aware pop (D11): 1.12 + 0.13 x min(1, |delta|/50), at most 1.25.
-    // Green flash on a gain, coral on a spend.
+    // A light-indigo flash on a gain, coral on a spend (green is the
+    // Work-with-me pill's alone).
     // The chip keeps one width through the count (tabular digits; the wider
     // of the two ends).
     el.style.minWidth = '';
@@ -8312,7 +8313,7 @@ export class SimpleUI {
     SimpleUI.chipText(el, String(from));
     const scale = Math.min(1.25, 1.12 + 0.13 * Math.min(1, Math.abs(delta) / 50));
     el.style.transform = `scale(${scale.toFixed(2)})`;
-    el.style.color = delta > 0 ? '#7fe08a' : '#ff9a7a';
+    el.style.color = delta > 0 ? '#c9d4ff' : '#ff9a7a';
     window.setTimeout(() => {
       el.style.transform = 'scale(1)';
       el.style.color = '#ffd34a';
