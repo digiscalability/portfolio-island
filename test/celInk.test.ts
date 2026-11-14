@@ -13,7 +13,6 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { describe, expect, test, vi } from 'vitest';
 
 import { a11y } from '../Accessibility';
-import { fx } from '../FxBudget';
 import {
   addFleetHull,
   addGroupHulls,
@@ -27,6 +26,7 @@ import {
   resetPhoneInkForTest,
   STATIC_INK,
 } from '../CelLook';
+import { fx } from '../FxBudget';
 
 const boxGroup = (n: number): THREE.Group => {
   const g = new THREE.Group();
