@@ -6409,7 +6409,7 @@ export class SimpleUI {
             </div>
           </div>
           <div style="font-family:var(--font-display, 'Bebas Neue', sans-serif);font-size:min(48px,12vw);line-height:1.05;letter-spacing:1.5px;">
-            DIGISCALABILITY LIFE ISLAND</div>
+            DIGISCALABILITY <span style="white-space:nowrap">LIFE ISLAND</span></div>
           <div style="color:#a9bdd4;font-size:13px;margin-top:6px;max-width:290px;">
             Abbas Ali's hand-built 3D portfolio — a living 3D world where
             ${Object.keys(AI_NPCS).length} villagers talk through Claude Haiku 4.5.</div>
@@ -6766,7 +6766,7 @@ export class SimpleUI {
          ${exploreBtn}
          ${controlsStrip}`
       : `
-      <h1 style="margin: 0 0 8px 0; font-family: var(--font-display, 'Bebas Neue', sans-serif); font-weight: 400; font-size: 40px; line-height: 1.05; letter-spacing: 0.5px; color: #4CAF50;">DigiScalability Life Island</h1>
+      <h1 style="margin: 0 0 8px 0; font-family: var(--font-display, 'Bebas Neue', sans-serif); font-weight: 400; font-size: 40px; line-height: 1.05; letter-spacing: 0.5px; color: #4CAF50;">DigiScalability <span style="white-space:nowrap">Life Island</span></h1>
       <p style="margin: 0 0 10px 0; font-size:15px; line-height:1.5;">
         I'm <strong>Abbas</strong> — I build AI products end to end, and this island is my
         portfolio. Walk up to a district to open it, or jump straight there below.</p>

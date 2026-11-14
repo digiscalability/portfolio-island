@@ -134,6 +134,25 @@ describe('the loader has a way out', () => {
     expect(title?.getAttribute('style')).toContain('font-size:min(48px,12vw)');
   });
 
+  // Round 3 play: the welcome card broke its title as 'DIGISCALABILITY LIFE /
+  // ISLAND' at 1440x900 and 390x844, while the loader before it read
+  // 'DIGISCALABILITY / LIFE ISLAND', so the handover jumped. Both titles keep
+  // 'Life Island' on one line; the text itself is unchanged.
+  test('the loader and the welcome card break the title before LIFE ISLAND', () => {
+    ui.showLoading(10);
+    const loader = [...document.querySelectorAll<HTMLElement>('#ui-overlay div')].find(
+      (d) => text(d) === 'DIGISCALABILITY LIFE ISLAND',
+    )!;
+    const keep = (el: Element): HTMLElement | undefined =>
+      [...el.querySelectorAll<HTMLElement>('span')].find((s) => s.style.whiteSpace === 'nowrap');
+    expect(text(keep(loader))).toBe('LIFE ISLAND');
+    ui.hideLoading();
+    ui.showWelcome(null);
+    const h1 = document.querySelector('[role="dialog"] h1')!;
+    expect(h1.textContent).toBe('DigiScalability Life Island');
+    expect(text(keep(h1))).toBe('Life Island');
+  });
+
   test('the pitch line reads like index.html’s static loader, count from the roster', () => {
     // index.html shows the same line before the bundle runs; keep the two in step.
     ui.showLoading(10);
