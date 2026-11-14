@@ -392,6 +392,22 @@ describe('messages: one at a time', () => {
     card.remove();
   });
 
+  // Round 3 play: on a 390x844 phone the first coin's pop (B9: up 1.75 u
+  // over the head, gone by 450 ms, sparkles by 500) landed at y 615-770,
+  // and the coin tip it triggers sat over its lower half. The pickup's
+  // ds:coin comes first, in the same task; the message waits out the pop.
+  test('a message waits out the coin pop that set it off', () => {
+    vi.useFakeTimers();
+    window.dispatchEvent(new CustomEvent('ds:coin', { detail: { x: 195, y: 690, value: 1 } }));
+    ui.toast('🪙 Coins! The 📔 Journal lists every way to earn.', { hint: true });
+    expect(toastEl()?.style.opacity ?? '0').toBe('0'); // the pop is on screen
+    vi.advanceTimersByTime(500);
+    expect(toastEl()?.style.opacity ?? '0').toBe('0'); // sparkles still falling
+    vi.advanceTimersByTime(200);
+    expect(text(toastEl())).toBe('🪙 Coins! The 📔 Journal lists every way to earn.');
+    expect(toastEl()!.style.opacity).toBe('1');
+  });
+
   test('the first-run compass hint stands down once First steps arms', () => {
     vi.useFakeTimers();
     ui.showWelcome(null);

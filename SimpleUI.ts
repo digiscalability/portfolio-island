@@ -1744,6 +1744,13 @@ export class SimpleUI {
    *  leaving a hall, 2.0 s after the passport toast). A hint taken down at
    *  once (stepHintAside) has no fade to wait for. */
   private toastFadeUntil = 0;
+  /** B9's pop and its sparkles, plus a frame's margin, ms. */
+  private static readonly COIN_POP_MS = 600;
+  /** A coin's pop is on screen until then (round 3 play): no message shows
+   *  over it. B9's pop rises 1.75 u over the head and is gone by 450 ms, its
+   *  sparkles by 500; on a 390x844 phone it landed at y 615-770, under the
+   *  bottom toast lane, and the coin tip it set off hid its lower half. */
+  private coinPopUntil = 0;
   /**
    * Brief auto-dismissing status toast — e.g. "Muted <name>".
    *
@@ -2034,7 +2041,7 @@ export class SimpleUI {
     // nor before the fly-in settles (a returning visitor read a special
     // before the card, FM-12), nor over a fading flash or toast — re-checked
     // on a short poll so deferred messages surface right after.
-    const fade = Math.max(this.flashFadeUntil, this.toastFadeUntil) - Date.now();
+    const fade = Math.max(this.flashFadeUntil, this.toastFadeUntil, this.coinPopUntil) - Date.now();
     const wait = this.isLoadingVisible() || this.isWelcomeVisible() || this.introHold() || fade > 0;
     const m = wait ? null : this.takeToast();
     if (m === null) {
@@ -8342,6 +8349,8 @@ export class SimpleUI {
    * Reduced motion, or no visible chip: no flight, the chip counts in place.
    */
   private readonly onCoinEvent = (e: Event): void => {
+    // The pop shows whatever the flight does: the next message waits it out.
+    this.coinPopUntil = Date.now() + SimpleUI.COIN_POP_MS;
     const d = (e as CustomEvent<{ x?: number; y?: number }>).detail;
     const chip = this.coinDiv;
     if (!chip || a11y.reducedMotion || !d || !Number.isFinite(d.x) || !Number.isFinite(d.y)) return;
