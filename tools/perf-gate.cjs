@@ -129,6 +129,27 @@ const FX_LEDGER = {
   idleLife: { desktop: 40, lowtier: 15 },
   pins: 0,
   dust: 15,
+  // C9 (wave 4): the canopy sways in the vertex shader; its only CPU is the
+  // switch, so plan-r3's ledger line is 0 µs (n/a when fx.time never runs).
+  canopySway: 0,
+  // B9 (wave 4): the additive glint quad over the instanced coins, off on the
+  // low tier. plan-r3's ledger line is the coins' (20 µs, the glint inside
+  // it), so the glint is held to the same 20 µs on desktop and 0 on the low
+  // tier, where it does not run (n/a when fx.time never runs).
+  coinGlint: { desktop: 20, lowtier: 0 },
+};
+// Per-effect bars that replace the tier's generic ones in --fx <name>
+// (plan-r3 perfBudget): canopySway's GPU p50 rises 0.3 ms or less and it adds
+// no program (the amplitude uniform is 0 when off; the program is the same).
+const FX_BARS = {
+  canopySway: { gpuP50: 0.3, programs: 0 },
+  // B9's coins add +2 programs on desktop and +1 on the low tier (plan-r3),
+  // the difference being the glint's additive material: one program.
+  coinGlint: { programs: 1 },
+};
+const fxBar = (name, key, fallback) => {
+  const b = FX_BARS[name];
+  return b && typeof b[key] === 'number' ? b[key] : fallback;
 };
 const ledgerUs = (name, prof) => {
   const v = FX_LEDGER[name];
@@ -1603,40 +1624,49 @@ function modeRejudge(args) {
  * The main chunk's size (wave-2 amendments). Wave 1 took it over Vite's
  * 1,000 kB chunk warning (vite.config.ts chunkSizeWarningLimit, which stays
  * where it is). kB are Vite's: bytes / 1000, gzip at zlib's default level.
- * - main: wave-2 main (f79c38c; 29edc9b builds the same chunk), the
- *   baseline every delta is reported against (wave-3 amendments, bundle).
+ * - main: wave-3 main (fcaa649; w3-unhold perf-ab.log), the baseline every
+ *   delta is reported against (wave-4 amendments, bundle). wave2 (f79c38c),
  *   wave1 (8662b27) and beforeWave1 (d5e0e96) are kept for the record.
+ *   Waves 1-3 used 39.63 kB of the budget, so all of wave 4 has about
+ *   10.4 kB gzip.
  * - gzipBudgetKB: the plan's '+50 KB transferred before the card' (the main
  *   chunk is fetched before the card); the gating half of the check. The
  *   budget stays anchored at budgetBase (wave-1 main), so rebasing main
  *   does not hand the budget back: wave 2 used +21.97 kB of it.
- * - lazyCandidate: the largest whole module in the chunk that nothing needs
- *   before the welcome card, measured on ux/w2-perf-gate by minifying each
- *   module of the chunk on its own (esbuild, then gzip). GameScene.ts,
- *   SimpleUI.ts, Island.ts and main-simple.ts are 69% of the chunk and are
- *   not candidates as whole files. A moves it in wave 3 (amendments, A).
- * - nextCandidate: the one the report names for wave 4.
+ * - beforeCard: modules the world needs before the welcome card, so never
+ *   lazy-load candidates as whole files. GameScene.ts, SimpleUI.ts, Island.ts
+ *   and main-simple.ts are 69% of the chunk; the rest build the player, the
+ *   renderer and cel look, camera, sky, input, HUD registry, NPC walks and
+ *   the First steps card.
+ *   The candidates themselves are measured per run (lazyCandidates), not
+ *   pinned here: wave 4 pinned Multiplayer.ts and Chat.ts after both were
+ *   already their own chunks, so the report named a module with nothing left
+ *   to move.
  */
 const BUNDLE = {
   warnKB: 1000,
-  main: { rawKB: 1073.23, gzipKB: 333.82, at: 'wave-2 main (f79c38c)' },
+  main: { rawKB: 1123.45, gzipKB: 351.48, at: 'wave-3 main (fcaa649)' },
+  wave2: { rawKB: 1073.23, gzipKB: 333.82, at: 'wave-2 main (f79c38c)' },
   wave1: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
   beforeWave1: { rawKB: 930.89, gzipKB: 288.04, at: 'main before wave 1 (d5e0e96)' },
   gzipBudgetKB: 50,
   budgetBase: { rawKB: 1004.45, gzipKB: 311.85, at: 'wave-1 main (8662b27)' },
-  nextCandidate: {
-    module: 'Chat.ts',
-    minKB: 7.0,
-    gzipKB: 2.77,
-    how: "once SimpleUI.ts stops importing Chat's VOICE_MAX_MS (wave 4)",
-  },
-  lazyCandidate: {
-    module: 'Multiplayer.ts',
-    minKB: 14.07,
-    gzipKB: 5.17,
-    owners: 'A imports it (main-simple.ts), B owns the file',
-    how: "main-simple.ts builds it after the world, so a dynamic import() there moves it out; Chat.ts (7.0 kB, 2.77 gzip) can follow once SimpleUI.ts stops importing Chat's VOICE_MAX_MS",
-  },
+  beforeCard: [
+    'main-simple.ts',
+    'GameScene.ts',
+    'SimpleUI.ts',
+    'Island.ts',
+    'SimplePlayer.ts',
+    'SimpleRenderer.ts',
+    'CelLook.ts',
+    'OrbitCamera.ts',
+    'EnvironmentCycle.ts',
+    'SimpleInputManager.ts',
+    'PanelManager.ts',
+    'Guide.ts',
+    'GuideCard.ts',
+    'NpcActivities.ts',
+  ],
 };
 const kB = (bytes) => round(bytes / 1000, 2);
 /** A dist's main chunk: { file, rawKB, gzipKB }, or null when the dist has none (a --base run). */
@@ -1664,6 +1694,104 @@ function bundleCheck(size, base = BUNDLE.main) {
   const budgetUsedKB = round(size.gzipKB - BUNDLE.budgetBase.gzipKB, 2);
   const overWarningKB = round(size.rawKB - BUNDLE.warnKB, 2);
   return { ...size, base, deltaRawKB, deltaGzipKB, budgetUsedKB, overWarning: overWarningKB > 0, overWarningKB, pass: budgetUsedKB <= BUNDLE.gzipBudgetKB };
+}
+
+/**
+ * The modules a dist already splits off: every chunk in assets/ named after
+ * a module ('Multiplayer-<hash>.js' is Multiplayer), less the entry and the
+ * manualChunks vendors. A Set of base names, empty when there is no dist.
+ */
+function splitChunks(dist) {
+  const out = new Set();
+  try {
+    for (const f of fs.readdirSync(path.join(dist, 'assets'))) {
+      const m = /^(.+)-[\w-]{8}\.js$/.exec(f);
+      if (m && !['main', 'index', 'three', 'firebase', 'postprocessing'].includes(m[1])) out.add(m[1]);
+    }
+  } catch (e) {}
+  return out;
+}
+/** The source tree a dist was built from: its parent when that holds index.html, else this checkout. */
+function srcRootOf(dist) {
+  const up = dist ? path.dirname(path.resolve(dist)) : null;
+  return up && fs.existsSync(path.join(up, 'index.html')) ? up : path.resolve(__dirname, '..');
+}
+/**
+ * The eager modules of a source tree: every repo module in the entry's output
+ * or in a chunk the entry imports statically, measured as esbuild minifies it
+ * in a split bundle (packages stay external). A module only reached through
+ * import() is not eager. Rows are { module, minBytes, importers }, the
+ * importers being the eager modules that import it statically.
+ */
+function eagerModules(root) {
+  const esbuild = require(require.resolve('esbuild', { paths: [root, __dirname] }));
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const entry = (/<script[^>]*type="module"[^>]*src="\/?([^"]+)"/.exec(html) || [])[1];
+  if (!entry) throw new Error('no module script in index.html');
+  const r = esbuild.buildSync({
+    absWorkingDir: root,
+    entryPoints: [entry],
+    bundle: true,
+    splitting: true,
+    format: 'esm',
+    minify: true,
+    write: false,
+    metafile: true,
+    outdir: 'out',
+    packages: 'external',
+    logLevel: 'silent',
+    loader: { '.css': 'empty', '.svg': 'empty', '.png': 'empty', '.jpg': 'empty', '.webp': 'empty', '.glsl': 'text' },
+    define: { 'import.meta.env': '{}' },
+  });
+  const { inputs, outputs } = r.metafile;
+  const entryOut = Object.keys(outputs).find((k) => outputs[k].entryPoint === entry);
+  const eagerOuts = new Set();
+  const walk = (k) => {
+    if (!k || eagerOuts.has(k)) return;
+    eagerOuts.add(k);
+    for (const im of outputs[k].imports || []) if (im.kind === 'import-statement' && outputs[im.path]) walk(im.path);
+  };
+  walk(entryOut);
+  const bytes = {};
+  for (const k of eagerOuts) for (const [f, i] of Object.entries(outputs[k].inputs)) bytes[f] = (bytes[f] || 0) + i.bytesInOutput;
+  const importers = {};
+  for (const f of Object.keys(bytes)) for (const im of (inputs[f] && inputs[f].imports) || []) if (im.kind === 'import-statement' && im.path in bytes) (importers[im.path] = importers[im.path] || []).push(f);
+  return Object.entries(bytes)
+    .filter(([f]) => !f.includes('node_modules'))
+    .map(([module, minBytes]) => ({ module, minBytes, importers: (importers[module] || []).sort() }))
+    .sort((a, b) => b.minBytes - a.minBytes);
+}
+/**
+ * The next lazy-load candidates: the largest eager modules that the dist does
+ * not already split off and the world does not need before the card
+ * (BUNDLE.beforeCard), each minified on its own (esbuild) and gzipped as the
+ * wave-2 measurement did. { candidates: [{ module, minKB, gzipKB, importers }], split, error }.
+ */
+function lazyCandidates(root, dist, n = 2) {
+  const split = [...splitChunks(dist)].sort();
+  try {
+    const esbuild = require(require.resolve('esbuild', { paths: [root, __dirname] }));
+    const skip = new Set(BUNDLE.beforeCard);
+    const rows = eagerModules(root).filter((r) => !skip.has(r.module) && !split.includes(path.basename(r.module).replace(/\.[cm]?[jt]s$/, '')));
+    const candidates = rows.slice(0, n).map((r) => {
+      const src = fs.readFileSync(path.join(root, r.module), 'utf8');
+      const min = esbuild.transformSync(src, { loader: /\.[cm]?js$/.test(r.module) ? 'js' : 'ts', minify: true, format: 'esm' }).code;
+      return { module: r.module, minKB: kB(Buffer.byteLength(min)), gzipKB: kB(zlib.gzipSync(min).length), importers: r.importers };
+    });
+    return { candidates, split, error: null };
+  } catch (e) {
+    return { candidates: [], split, error: String((e && e.message) || e).split('\n')[0] };
+  }
+}
+/** A candidate list as the report line reads it. */
+function fmtCandidates(lc) {
+  if (lc.error) return `lazy-load candidate not measured: ${lc.error}`;
+  const one = (c) => `${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (imported by ${c.importers.join(', ') || 'nothing static'})`;
+  const [c, nx] = lc.candidates;
+  const parts = [c ? `next lazy-load candidate: ${one(c)}` : 'no eager module left outside BUNDLE.beforeCard'];
+  if (nx) parts.push(`then ${one(nx)}`);
+  parts.push(`already split: ${lc.split.join(', ') || 'none'}`);
+  return parts.join('; ');
 }
 
 /** A dist's entry bundle (main-<hash>.js), or its folder name when it has none. */
@@ -1785,13 +1913,6 @@ const FX_PAIR = ({ name }) => {
   return { off, on };
 };
 
-/**
- * --fx <name>: the effect starts OFF before any page script runs. 30 s after
- * the card, each view is posed and measured with 4 off/on pairs (FX_PAIR:
- * whole-frame draws, triangles and programs per side, nothing moving in
- * between); programs the ON sides add are the effect's. Then 6 x 1.5 s per
- * side of timing at the spawn, escalating like --ab.
- */
 // E4's modal scenario: main-thread busy time (long tasks and long animation
 // frames, merged, per second) and Event Timing durations for taps on the
 // panel's buttons, recorded from the first script.
@@ -1993,6 +2114,13 @@ async function fxRoomEnter(session) {
   return { room: ROOM_ID, press: e.press, inside };
 }
 
+/**
+ * --fx <name>: the effect starts OFF before any page script runs. 30 s after
+ * the card, each view is posed and measured with 4 off/on pairs (FX_PAIR:
+ * whole-frame draws, triangles and programs per side, nothing moving in
+ * between); programs the ON sides add are the effect's. Then 6 x 1.5 s per
+ * side of timing at the spawn, escalating like --ab.
+ */
 async function modeFx(args) {
   const name = String(args.fx);
   // E4's modal divisor is measured behind a panel on the 4x low tier, not by off/on frame pairs.
@@ -2021,6 +2149,13 @@ async function modeFx(args) {
       try {
         await bootPage(page, server.url, p, hour);
         await settleAfterCard(page, 30);
+        // A build that never registers the effect has nothing to switch: the
+        // effect reads null (the wave-4 contract: --fx canopySway before C9).
+        const reg = await page.evaluate(FX_SNAPSHOT);
+        if (FX_BARS[name] && !(reg.effects || {})[name]) {
+          data.profiles[prof] = { verdict: 'n/a', registered: false, note: `'${name}' is not registered with FxBudget on this build`, metrics: {} };
+          continue;
+        }
         // Counters: per view, 4 off/on pairs with the world held still.
         const counters = {};
         let programsAdded = 0;
@@ -2085,7 +2220,7 @@ async function modeFx(args) {
             [`${at}: CPU p95 ms`]: { kind: 'timing', ...judge(offW.map((x) => x.cpuP95), onW.map((x) => x.cpuP95), T.cpuP95) },
           };
           rows[`${at}: CPU mean ms`] = { kind: 'timing', ...judge(offW.map((x) => x.cpuMean), onW.map((x) => x.cpuMean), null) };
-          rows[`${at}: GPU p50 ms`] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), T.gpuP50 ?? null) };
+          rows[`${at}: GPU p50 ms`] = { kind: 'timing', ...judge(offW.map((x) => x.gpuP50), onW.map((x) => x.gpuP50), fxBar(name, 'gpuP50', T.gpuP50 ?? null)) };
           for (const view of VIEWS) rows[`${view}: draws`] = { kind: 'counter', ...counters[view].draws };
           // What the effect is meant to save (FX_CREDIT), held beside the budgets.
           const credit = (FX_CREDIT[name] || {})[prof] || null;
@@ -2099,7 +2234,8 @@ async function modeFx(args) {
             }
             if (credit.shadowDrawsUnchanged) rows['credit: spawn shadow draws unchanged'] = { kind: 'credit', verdict: Math.abs(sd('on') - sd('off')) <= 0.5 ? 'pass' : 'fail', medianA: round(sd('off'), 1), medianB: round(sd('on'), 1), delta: round(sd('on') - sd('off'), 1), threshold: 'on = off', n: counters.spawn.on.length };
           }
-          rows['programs the effect adds'] = { kind: 'counter', verdict: programsAdded <= T.programs ? 'pass' : 'fail', delta: programsAdded, threshold: T.programs, n: 1 };
+          const progBar = fxBar(name, 'programs', T.programs);
+          rows['programs the effect adds'] = { kind: 'counter', verdict: programsAdded <= progBar ? 'pass' : 'fail', delta: programsAdded, threshold: progBar, n: 1 };
           const us = onW.map((x) => (x.fxUsPerFrame || {})[name]).filter((x) => x !== null && x !== undefined);
           // The effect's own ledger line when plan-r3 gives one, inside the tier's per-effect cap.
           const usCap = Math.min(FX_US[prof], ledgerUs(name, prof) ?? FX_US[prof]);
@@ -2138,7 +2274,7 @@ async function modeFx(args) {
     await server.stop();
   }
   const vs = Object.values(data.profiles).map((p) => p.verdict);
-  data.verdict = data.leaks.length ? 'fail-closed' : vs.includes('fail') ? 'fail' : vs.includes('inconclusive') || data.signUpMissing ? 'inconclusive' : 'pass';
+  data.verdict = data.leaks.length ? 'fail-closed' : vs.includes('fail') ? 'fail' : vs.includes('inconclusive') || data.signUpMissing ? 'inconclusive' : vs.length && vs.every((v) => v === 'n/a') ? 'n/a' : 'pass';
   return data;
 }
 
@@ -2298,12 +2434,12 @@ async function modeReport(args) {
   data.bundle = bundle;
   if (bundle) {
     const m = BUNDLE.main;
-    const c = BUNDLE.lazyCandidate;
-    const n = BUNDLE.nextCandidate;
+    const lc = lazyCandidates(srcRootOf(server.dist), server.dist);
+    data.lazyCandidates = lc;
     const b = BUNDLE.budgetBase;
     check(`bundle: main chunk gzip kB inside the budget (${bundle.file})`, bundle.pass, { gzipKB: bundle.gzipKB, delta: bundle.deltaGzipKB, budgetUsed: bundle.budgetUsedKB }, `<= ${b.gzipKB} + ${BUNDLE.gzipBudgetKB} (${b.at}); delta against ${m.at} ${m.gzipKB}`);
     check('bundle: main chunk raw kB against main (report-only)', null, { rawKB: bundle.rawKB, delta: bundle.deltaRawKB }, `main ${m.rawKB} (${m.at}); wave 1 ${BUNDLE.wave1.rawKB}; before wave 1 ${BUNDLE.beforeWave1.rawKB} raw, ${BUNDLE.beforeWave1.gzipKB} gzip`, true);
-    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, `lazy-load candidate this wave: ${c.module}, ${c.minKB} kB minified, ${c.gzipKB} kB gzip (${c.owners}); next for wave 4: ${n.module}, ${n.minKB} kB, ${n.gzipKB} kB gzip`, true);
+    check(`bundle: over Vite's ${BUNDLE.warnKB} kB chunk warning (report-only; the limit stays)`, null, bundle.overWarning ? `over by ${bundle.overWarningKB} kB` : `under by ${-bundle.overWarningKB} kB`, fmtCandidates(lc), true);
   } else check('bundle: main chunk size (report-only)', null, 'no dist on disk (a --base run)', 'reported with --dist', true);
   const gating = data.checks.filter((c) => !c.reportOnly);
   data.verdict = data.leaks.length ? 'fail-closed' : gating.some((c) => c.pass === false) ? 'fail' : data.signUpMissing ? 'inconclusive' : 'pass';
@@ -2371,6 +2507,10 @@ function printSummary(data) {
   if (data.mode === 'report' || data.mode === 'governor' || data.scenario === 'modal') for (const c of data.checks || []) lines.push(`  ${c.reportOnly ? 'info' : c.pass === true ? 'PASS' : c.pass === false ? 'FAIL' : '  ? '} ${c.name}: ${JSON.stringify(c.value)}  (${c.expect})`);
   else
     for (const [prof, p] of Object.entries(data.profiles || {})) {
+      if (p.registered === false) {
+        lines.push(`  ${prof}: ${p.verdict}: ${p.note}`);
+        continue;
+      }
       lines.push(`  ${prof}: ${p.verdict} after ${p.cycles} cycles${p.sourceVerdict ? ` (it read ${p.sourceVerdict} after ${p.sourceCycles})` : ''}${p.hostBusyPct ? ` (host ${p.hostBusyPct.p50}% busy, max ${p.hostBusyPct.max}%${p.otherBusyPct ? `; other processes ${p.otherBusyPct.p50}%, max ${p.otherBusyPct.max}%` : ''})` : ''}`);
       const note = hostNote(p.otherBusyPct, p.verdict);
       if (note) lines.push(`    note: ${note}`);
@@ -2456,4 +2596,4 @@ if (require.main === module) {
 }
 
 // The verdict maths, for re-judging a saved run.
-module.exports = { hostNote, BUNDLE, bundleSize, bundleCheck, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, BASELINE, VIEW_DEFS, POSE_TOL_RAD };
+module.exports = { hostNote, BUNDLE, bundleSize, bundleCheck, splitChunks, srcRootOf, eagerModules, lazyCandidates, fmtCandidates, judgeAbsolute, judgeCredit, duskVerdict, FX_CREDIT, DUSK_LONGEST_MS, frameNumbers, judge, signCritical, signPass, SIGN_ALPHA, SIGN_PASS_MIN, modeRejudge, judgeCounter, judgeMixCounter, mixValue, aaSpread, writeFloor, judgeExact, bootModes, stratify, cpuProxy, metricTable, overall, aaSummary, poseCheck, ledger, t975, loadFloor, floorOf, floorQuiet, QUIET_OTHER_PCT, THRESHOLDS, FX_US, FX_LEDGER, FX_BARS, fxBar, BASELINE, VIEW_DEFS, POSE_TOL_RAD };

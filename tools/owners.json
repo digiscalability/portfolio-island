@@ -29,6 +29,7 @@
         "fxBudget",
         "probeSafety",
         "probeHitch",
+        "probeRows",
         "astSlice"
       ],
       "testFiles": ["test/helpers/networkStubs.ts", "test/helpers/astSlice.ts"]
@@ -287,11 +288,25 @@
       "why": "builds Island for the census through the isLowTierDevice mock"
     },
     {
+      "test": "probeSafety",
+      "via": "read",
+      "files": ["SignPainter.ts"],
+      "where": "probeSafety, the landmark probe's Fact Sheet table (wave 4)",
+      "why": "the landmark probe's Fact Sheet table: p2/landmarks' fixture equals SignPainter.PROJECT_BOARDS"
+    },
+    {
       "test": "grassMarshal",
       "via": "import",
       "files": ["SimpleRenderer.ts"],
       "where": "grassMarshal imports",
       "why": "the isLowTierDevice mock"
+    },
+    {
+      "test": "celInk",
+      "via": "import",
+      "files": ["FxBudget.ts"],
+      "where": "celInk imports (spy on fx.time, test at 467 on 647a20d)",
+      "why": "proves the canopy-sway amplitude getter does no fx.time timing, so perf-gate's 0 µs ledger line holds"
     }
   ]
 }

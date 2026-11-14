@@ -173,8 +173,164 @@ async function phone(t) {
   }
 }
 
+// ---------------------------------------------------------- D16 (wave 4)
+// Does the minimap or the compass show through a card at 390x844 and
+// 844x390? For each card (the Portfolio menu, the hire card, the Projects
+// panel) and each element, the part of the element under the card is
+// screenshotted with the element shown (A), hidden (B) and shown again (C).
+// The element shows through when A and B differ in more of the pixels than
+// A and C do (the live scene's own motion) by 1% or more. The minimap's
+// label cap height is measured from its own fillText calls: the 'H' ascent
+// of each label font, times the canvas transform, in CSS px.
+const LABEL_INIT = `(() => {
+  if (window.top !== window) return;
+  const W = (window.__mapText = new WeakMap());
+  const f = CanvasRenderingContext2D.prototype.fillText;
+  CanvasRenderingContext2D.prototype.fillText = function (text, x, y, m) {
+    try {
+      let a = W.get(this.canvas);
+      if (!a) W.set(this.canvas, (a = []));
+      a.push({ text: String(text).slice(0, 24), font: this.font, k: this.getTransform().a });
+      if (a.length > 400) a.splice(0, 200);
+    } catch (e) {}
+    return f.call(this, text, x, y, m);
+  };
+})();`;
+const MAP_LABELS = () => {
+  const c = window.__app.ui.mapCanvas;
+  if (!c || !c.isConnected) return null;
+  const css = c.getBoundingClientRect().width / c.width;
+  const calls = (window.__mapText.get(c) || []).filter((x) => /[A-Za-z]{2,}/.test(x.text));
+  const m = document.createElement('canvas').getContext('2d');
+  const seen = new Map();
+  for (const x of calls) {
+    // The online-count pill ('3 ONLINE') is a caption on the ring, not a
+    // place label; it is keyed apart so a shared font cannot hide either.
+    const pill = /^\d+\s+ONLINE$/i.test(x.text.trim());
+    const key = `${pill ? 'pill' : 'label'}|${x.font}|${x.k}`;
+    if (seen.has(key)) continue;
+    m.font = x.font;
+    const cap = m.measureText('H').actualBoundingBoxAscent * x.k * css;
+    seen.set(key, { font: x.font, capPx: Math.round(cap * 10) / 10, sample: x.text, pill });
+  }
+  return { rows: [...seen.values()] };
+};
+/**
+ * D16's row: the minimap's place labels (the Hub, the districts), which D16
+ * sets to 10.5 px/600. The online-count pill is reported apart: D16 does not
+ * change it (6.7 px at 844x390 on main and on wave 4 alike).
+ */
+function judgeMapLabels(read) {
+  if (!read || !Array.isArray(read.rows)) return null;
+  const labels = read.rows.filter((r) => !r.pill);
+  const pills = read.rows.filter((r) => r.pill);
+  return { labels, pills, minCapPx: labels.length ? Math.min(...labels.map((r) => r.capPx)) : null, pillCapPx: pills.length ? Math.min(...pills.map((r) => r.capPx)) : null };
+}
+const RECT_UNDER = (which) => {
+  const ui = window.__app.ui;
+  const el = which === 'minimap' ? ui.mapCanvas : ui.compassDiv;
+  const panels = [ui.zonePanelDiv, document.querySelector('[aria-label="Portfolio menu"]'), ...document.querySelectorAll('[role=dialog]')].filter((d) => d && d.isConnected && getComputedStyle(d).display !== 'none' && parseFloat(getComputedStyle(d).opacity) > 0.5);
+  if (!el || !el.isConnected || getComputedStyle(el).display === 'none' || !panels.length) return null;
+  const e = el.getBoundingClientRect();
+  let best = null;
+  for (const p of panels) {
+    const r = p.getBoundingClientRect();
+    // Inset by the card's corner radius (and border) where the overlap meets
+    // its edge: a rounded corner's outside is not the card.
+    const cs = getComputedStyle(p);
+    const rad = Math.max(...['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomLeftRadius', 'borderBottomRightRadius'].map((k) => parseFloat(cs[k]) || 0)) + (parseFloat(cs.borderTopWidth) || 0);
+    const x0 = Math.max(e.left, r.left + rad);
+    const y0 = Math.max(e.top, r.top + rad);
+    const x1 = Math.min(e.right, r.right - rad, innerWidth);
+    const y1 = Math.min(e.bottom, r.bottom - rad, innerHeight);
+    if (x1 - x0 >= 4 && y1 - y0 >= 4 && (!best || (x1 - x0) * (y1 - y0) > best.width * best.height)) best = { x: Math.floor(x0), y: Math.floor(y0), width: Math.floor(x1 - x0), height: Math.floor(y1 - y0) };
+  }
+  return best;
+};
+function diffFrac(a, b) {
+  let n = 0;
+  // 4 levels: a 0.95-alpha card over a bright minimap moves pixels by about 5-13.
+  for (let i = 0; i < a.data.length; i += 4) if (Math.abs(a.data[i] - b.data[i]) > 4 || Math.abs(a.data[i + 1] - b.data[i + 1]) > 4 || Math.abs(a.data[i + 2] - b.data[i + 2]) > 4) n++;
+  return n / (a.data.length / 4);
+}
+async function showsThrough(page, which) {
+  const clip = await page.evaluate(RECT_UNDER, which);
+  if (!clip) return { overlap: false };
+  const vis = (v) =>
+    page.evaluate(
+      ([w, on]) => {
+        const ui = window.__app.ui;
+        const el = w === 'minimap' ? ui.mapCanvas : ui.compassDiv;
+        el.style.visibility = on ? '' : 'hidden';
+      },
+      [which, v],
+    );
+  const A = lib.pngDecode(await page.screenshot({ clip }));
+  await vis(false);
+  await page.waitForTimeout(80);
+  const B = lib.pngDecode(await page.screenshot({ clip }));
+  await vis(true);
+  await page.waitForTimeout(80);
+  const C = lib.pngDecode(await page.screenshot({ clip }));
+  const signal = diffFrac(A, B);
+  const noise = diffFrac(A, C);
+  return { overlap: true, clip, signalPct: lib.round(signal * 100, 1), noisePct: lib.round(noise * 100, 1), through: signal - noise >= 0.01 };
+}
+
+async function showthrough(t) {
+  for (const prof of t.profiles(['phone', 'landscape'])) {
+    const s = await t.session(prof, { init: [LABEL_INIT] });
+    const { page } = s;
+    await t.boot(s, { query: 'hour=12' });
+    await tapSel(page, `${lib.WELCOME} button[data-dismiss]`);
+    await page.waitForTimeout(2500);
+    const out = { labels: judgeMapLabels(await page.evaluate(MAP_LABELS)), cards: {} };
+    await t.shot(page, `showthrough-${prof}-hud.png`);
+    t.check(`${prof}: minimap label cap height (D16)`, out.labels && out.labels.minCapPx !== null ? out.labels.minCapPx >= 7 : null, out.labels ? out.labels.labels.map((l) => `${l.capPx} px ${l.font} (${l.sample})`) : 'no minimap', '>= 7 px (CSS)');
+    t.check(`${prof}: the minimap's online-count pill cap height (reported)`, true, out.labels && out.labels.pillCapPx !== null ? out.labels.pills.map((l) => `${l.capPx} px ${l.font} (${l.sample})`) : 'no pill drawn', 'reported, not D16 (main 6.7 px at 844x390)');
+    const cards = [
+      ['menu', async () => openMenu(page)],
+      [
+        'hire card',
+        async () => {
+          await page.evaluate(() => window.__app.ui.panels.closeAll());
+          await page.evaluate(() => window.__app.ui.showHireCard && window.__app.ui.showHireCard('menu'));
+          await page.waitForTimeout(900);
+        },
+      ],
+      [
+        'Projects',
+        async () => {
+          await openMenu(page);
+          await tapSel(page, 'button[data-section="projects"]');
+          await page.waitForTimeout(1100);
+        },
+      ],
+    ];
+    for (const [name, open] of cards) {
+      await open();
+      // --selftest-through: make every open card half transparent; the rows must fail.
+      if (t.args.selftestThrough)
+        await page.evaluate(() => {
+          for (const d of [window.__app.ui.zonePanelDiv, document.querySelector('[aria-label="Portfolio menu"]'), ...document.querySelectorAll('[role=dialog]')]) if (d && d.isConnected) d.style.background = 'rgba(12, 12, 20, 0.5)';
+        });
+      const r = { minimap: await showsThrough(page, 'minimap'), compass: await showsThrough(page, 'compass') };
+      out.cards[name] = r;
+      await t.shot(page, `showthrough-${prof}-${name.replace(/\s+/g, '-')}.png`);
+      const hits = Object.entries(r).filter(([, v]) => v.through);
+      const any = Object.values(r).some((v) => v.overlap);
+      t.check(`${prof}: the minimap or compass shows through the ${name} (D16)`, any ? hits.length === 0 : true, any ? Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v.overlap ? `${v.signalPct}% hidden vs ${v.noisePct}% noise${v.through ? ' (through)' : ''}` : 'not under the card'])) : 'neither is under the card', 'not through (A/B pixel diff no more than the A/C noise + 1%)');
+    }
+    await page.evaluate(() => window.__app.ui.panels.closeAll());
+    t.data[prof] = out;
+    await s.close();
+  }
+}
+
 module.exports = {
+  showthrough: { item: 'D16 (wave 4)', title: 'at 390x844 and 844x390: the minimap or compass showing through the menu, the hire card and Projects (pixels), and the minimap label cap height', profiles: ['phone', 'landscape'], run: showthrough },
   phone: { item: 'D4 (E6a)', title: 'phone tap targets under 44 px on every surface (welcome, HUD, drawer, menu, hire card, districts, emote wheel, NPC chat)', profiles: ['phone'], run: phone },
   UX_HELPERS,
   smallOf,
+  judgeMapLabels,
 };

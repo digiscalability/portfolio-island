@@ -47,16 +47,54 @@ const RECORDER = () => {
       }
     return best === Infinity ? null : best;
   };
-  const L = (window.__loco = { rows: [], on: false, sole: false, hand: false });
+  // The right hand: the armR-weighted (> 0.95) vertices lowest along the limb
+  // (rig.cjs's marker), their world centroid. getHandAnchor() is the armR
+  // bone, the SHOULDER pivot: it does not move when the arm swings.
+  const handSet = [];
+  {
+    const all = [];
+    (pl.gltfModel || pl).traverse((o) => {
+      if (!o.isSkinnedMesh) return;
+      const mat = (Array.isArray(o.material) ? o.material[0] : o.material).name;
+      if (mat === 'Outline') return;
+      const g = o.geometry;
+      const si = g.attributes.skinIndex;
+      const sw = g.attributes.skinWeight;
+      const pos = g.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        let bi = 0;
+        let bw = -1;
+        for (let k = 0; k < 4; k++)
+          if (sw.getComponent(i, k) > bw) {
+            bw = sw.getComponent(i, k);
+            bi = si.getComponent(i, k);
+          }
+        if (o.skeleton.bones[bi].name === 'armR' && bw > 0.95) all.push({ o, i, y: pos.getY(i) });
+      }
+    });
+    all.sort((a, b) => a.y - b.y);
+    handSet.push(...all.slice(0, Math.max(3, Math.floor(all.length * 0.1))));
+  }
+  const hv = new V();
+  const handWorld = () => {
+    if (!handSet.length) return null;
+    const a = new V();
+    for (const { o, i } of handSet) {
+      o.getVertexPosition(i, hv);
+      a.add(hv.applyMatrix4(o.matrixWorld));
+    }
+    return a.divideScalar(handSet.length);
+  };
+  const L = (window.__loco = { rows: [], on: false, sole: false, hand: false, handWorld });
   const tick = () => {
     if (L.on) {
       const p = pl.getWorldPosition();
       const cam = sc.getCamera().position;
       const r = { t: performance.now(), ground: pl.isOnGround(), speed: pl.getTangentialSpeed(), rp: p.length(), rc: cam.length(), sy: pl.gltfModel ? pl.gltfModel.scale.y : null, phase: pl.getWalkCyclePhase ? pl.getWalkCyclePhase() : null };
       if (L.sole) r.sole = sole();
-      // The hand: SimplePlayer's own hand anchor (the rod's mount), radial height over the feet.
-      const ha = L.hand && pl.getHandAnchor ? pl.getHandAnchor() : null;
-      if (ha) r.hand = ha.getWorldPosition(new V()).length() - p.length();
+      // The hand (armR's hand vertices), radial height over the feet.
+      const hw = L.hand ? handWorld() : null;
+      if (hw) r.hand = hw.length() - p.length();
       L.rows.push(r);
     }
     requestAnimationFrame(tick);
@@ -82,7 +120,7 @@ const RECORDER = () => {
     }
     return ot(text, opts);
   };
-  return { soles: soles.reduce((s, x) => s + x.idx.length, 0), hand: !!(pl.getHandAnchor && pl.getHandAnchor()) };
+  return { soles: soles.reduce((s, x) => s + x.idx.length, 0), hand: handSet.length };
 };
 /** A13's hint recorder alone: every toast with {hint:true}, and what was open when it fired. */
 const HINTS_INIT = () => {
@@ -182,6 +220,34 @@ const take = (page) => page.evaluate(() => {
   L.rows = [];
   return r;
 });
+/**
+ * The hand anchor and the head bone, projected (CSS px), with the head's
+ * disc radius (0.11 u beside the bone, across the view) and both depths in
+ * camera space. `box` is the crop's anchor, 1.0 u over the feet.
+ */
+const HAND_VS_HEAD = () => {
+  // The hand is window.__loco.handWorld (armR's hand vertices; installed with the recorder).
+  const sc = window.__app.scene;
+  const cam = sc.getCamera();
+  const pl = sc.getPlayer();
+  const V = pl.getWorldPosition().constructor;
+  const px = (w) => {
+    const v = w.clone().project(cam);
+    return [((v.x + 1) / 2) * innerWidth, ((1 - v.y) / 2) * innerHeight];
+  };
+  const depth = (w) => -w.clone().applyMatrix4(cam.matrixWorldInverse).z;
+  const p = pl.getWorldPosition().clone();
+  const box = px(p.clone().addScaledVector(p.clone().normalize(), 1.0));
+  const hw = window.__loco && window.__loco.handWorld ? window.__loco.handWorld() : null;
+  let head = null;
+  (pl.gltfModel || pl).traverse((o) => {
+    if (!head && o.isBone && /head/i.test(o.name) && !/top|end/i.test(o.name)) head = o;
+  });
+  const hd = head ? head.getWorldPosition(new V()) : null;
+  const right = new V(1, 0, 0).applyQuaternion(cam.quaternion);
+  const headR = hd ? Math.hypot(...px(hd.clone().addScaledVector(right, 0.11)).map((x, i) => x - px(hd)[i])) : null;
+  return { t: performance.now(), box, hand: hw ? px(hw) : null, head: hd ? px(hd) : null, headR, handDepth: hw ? depth(hw) : null, headDepth: hd ? depth(hd) : null, headBone: head ? head.name : null };
+};
 const rec = (page, o = {}) => page.evaluate((oo) => Object.assign(window.__loco, { rows: [], on: true, sole: !!oo.sole, hand: !!oo.hand }), o);
 
 async function settle(page) {
@@ -290,26 +356,60 @@ async function loco(t) {
     await lib.sleep(800);
     // ---- wave
     await rec(page, { hand: true });
+    // B6 (wave-4 rows list): 10 crops at 100 ms steps across the 1.23 s
+    // wave (150-1050 ms). Each judges the hand (armR's hand vertices)
+    // projected inside the 320 px crop around the head and not hidden by the
+    // head bone's projected disc (inside one radius of its centre and farther
+    // from the camera than the head). B6 wants 8 of 10.
+    // The geometry is sampled in-page every frame, so the judged frame is
+    // the one nearest each step whatever the screenshots cost; the crops
+    // are taken as close to their step as the screenshots allow.
+    await page.evaluate(`window.__hvh = ${HAND_VS_HEAD.toString()}`);
+    const T_WAVE = [150, 250, 350, 450, 550, 650, 750, 850, 950, 1050];
+    const waveP = page.evaluate(
+      () =>
+        new Promise((res) => {
+          const rows = [];
+          const t0 = performance.now();
+          window.__app.scene.getPlayer().triggerWave();
+          const tick = () => {
+            const g = window.__hvh();
+            g.t = g.t - t0;
+            rows.push(g);
+            if (performance.now() - t0 < 1300) requestAnimationFrame(tick);
+            else res(rows);
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
     const tw = await page.evaluate(() => performance.now());
-    await page.evaluate(() => window.__app.scene.getPlayer().triggerWave());
     const crops = [];
-    for (const ms of [150, 400, 800]) {
-      await lib.sleep(ms - (crops.length ? [150, 400, 800][crops.length - 1] : 0));
-      const box = await page.evaluate(() => {
-        const sc = window.__app.scene;
-        const p = sc.getPlayer().getWorldPosition().clone();
-        p.addScaledVector(p.clone().normalize(), 1.0);
-        const v = p.project(sc.getCamera());
-        return [((v.x + 1) / 2) * innerWidth, ((1 - v.y) / 2) * innerHeight];
-      });
-      const c = { x: Math.max(0, box[0] - 160), y: Math.max(0, box[1] - 180), width: 320, height: 320 };
+    for (const ms of T_WAVE) {
+      const now = await page.evaluate(() => performance.now());
+      if (tw + ms > now) await lib.sleep(tw + ms - now);
+      const g = await page.evaluate(() => window.__hvh());
+      const c = { x: Math.max(0, Math.round(g.box[0] - 160)), y: Math.max(0, Math.round(g.box[1] - 180)), width: 320, height: 320 };
       crops.push(await t.shot(page, `loco-${prof}-wave-${ms}ms.png`, { clip: c }));
     }
-    await lib.sleep(800);
+    const waveRows = await waveP;
+    const handRows = T_WAVE.map((ms) => {
+      const g = waveRows.reduce((b, r) => (Math.abs(r.t - ms) < Math.abs(b.t - ms) ? r : b), waveRows[0]);
+      const c = { x: Math.max(0, g.box[0] - 160), y: Math.max(0, g.box[1] - 180), width: 320, height: 320 };
+      const inCrop = g.hand ? g.hand[0] >= c.x && g.hand[0] <= c.x + c.width && g.hand[1] >= c.y && g.hand[1] <= c.y + c.height : false;
+      const d = g.hand && g.head ? Math.hypot(g.hand[0] - g.head[0], g.hand[1] - g.head[1]) : null;
+      const behind = d !== null && d < g.headR && g.handDepth > g.headDepth;
+      const beside = d !== null && !behind;
+      return { ms, atMs: Math.round(g.t), inCrop, distPx: d === null ? null : Math.round(d), headRPx: g.headR === null ? null : Math.round(g.headR), behind, visible: inCrop && beside };
+    });
+    await lib.sleep(400);
     rows = await take(page);
     const hw = rows.filter((r) => r.t >= tw && typeof r.hand === 'number').map((r) => [Math.round(r.t - tw), +r.hand.toFixed(2)]);
     out.wave = { curve: hw.filter((_, i) => i % 3 === 0).slice(0, 40), peak: hw.length ? Math.max(...hw.map((x) => x[1])) : null };
     t.check(`${prof}: the wave's hand-height curve`, hw.length ? true : null, out.wave.peak, 'reported, with crops (58c8849: -0.12 to 0.91 u on a 0.15 s linear ramp)');
+    out.wave.crops = handRows;
+    const seenN = handRows.filter((r) => r.visible).length;
+    const measurable = handRows.filter((r) => r.headRPx !== null && r.distPx !== null).length;
+    t.check(`${prof}: the waving hand is visible beside the head in 8 or more of 10 crops (B6)`, measurable >= 8 ? seenN >= 8 : null, `${seenN} of ${handRows.length} (${handRows.map((r) => `${r.ms}:${r.visible ? 'y' : r.behind ? 'behind' : 'out'}`).join(' ')}; px from the head ${handRows.map((r) => r.distPx).join('/')})`, '>= 8 of 10 (null: no hand vertices or head bone)');
     // ---- footfalls
     await page.evaluate(() => (window.__foot.length = 0));
     await page.keyboard.down('w');

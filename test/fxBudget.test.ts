@@ -1131,15 +1131,26 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
     BUNDLE: {
       warnKB: number;
       gzipBudgetKB: number;
-      main: { rawKB: number; gzipKB: number };
+      main: { rawKB: number; gzipKB: number; at: string };
+      wave2: { rawKB: number; gzipKB: number };
       wave1: { rawKB: number; gzipKB: number };
       beforeWave1: { rawKB: number; gzipKB: number };
       budgetBase: { rawKB: number; gzipKB: number };
-      lazyCandidate: { module: string; minKB: number; gzipKB: number };
-      nextCandidate: { module: string; minKB: number; gzipKB: number };
+      beforeCard: string[];
     };
     bundleSize: (dist: string) => Size | null;
     bundleCheck: (size: Size | null, base?: { rawKB: number; gzipKB: number }) => Check | null;
+    splitChunks: (dist: string | null) => Set<string>;
+    lazyCandidates: (
+      root: string,
+      dist: string | null,
+      n?: number,
+    ) => {
+      candidates: { module: string; minKB: number; gzipKB: number; importers: string[] }[];
+      split: string[];
+      error: string | null;
+    };
+    fmtCandidates: (lc: { candidates: unknown[]; split: string[]; error: string | null }) => string;
   };
   const nodeRequire = createRequire(import.meta.url);
   const fs = nodeRequire('node:fs') as typeof import('node:fs');
@@ -1147,18 +1158,29 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
   const path = nodeRequire('node:path') as typeof import('node:path');
   const zlib = nodeRequire('node:zlib') as typeof import('node:zlib');
 
-  // Wave-3 amendments (bundle): main is rebased to wave-2 main f79c38c, as
-  // measured at integration; the +50 kB budget stays anchored at wave-1 main.
-  test('the baseline is wave-2 main, the budget stays at wave 1, and the warning limit is not raised', () => {
+  // Wave-4 amendments (bundle): main is rebased to wave-3 main fcaa649
+  // (w3-unhold perf-ab.log); the +50 kB budget stays anchored at wave-1 main.
+  test('the baseline is wave-3 main, the budget stays at wave 1, and the warning limit is not raised', () => {
     expect(gate.BUNDLE.warnKB).toBe(1000);
-    expect(gate.BUNDLE.main).toMatchObject({ rawKB: 1073.23, gzipKB: 333.82 });
+    expect(gate.BUNDLE.main).toMatchObject({ rawKB: 1123.45, gzipKB: 351.48 });
+    expect(gate.BUNDLE.main.at).toMatch(/fcaa649/);
+    expect(gate.BUNDLE.wave2).toMatchObject({ rawKB: 1073.23, gzipKB: 333.82 });
     expect(gate.BUNDLE.wave1).toMatchObject({ rawKB: 1004.45, gzipKB: 311.85 });
     expect(gate.BUNDLE.budgetBase).toEqual(gate.BUNDLE.wave1);
     expect(gate.BUNDLE.beforeWave1).toMatchObject({ rawKB: 930.89, gzipKB: 288.04 });
-    // Wave 2 used +21.97 kB of the budget.
+    // Waves 1-3 used +39.63 kB of the budget: about 10.4 kB is left for wave 4.
+    const w3 = gate.bundleCheck({ file: 'main-w3.js', rawKB: 1123.45, gzipKB: 351.48 }) as Check;
+    expect(w3).toMatchObject({ deltaRawKB: 0, deltaGzipKB: 0, budgetUsedKB: 39.63, pass: true });
+    expect(w3.overWarningKB).toBe(123.45);
+    expect(Math.round((gate.BUNDLE.gzipBudgetKB - w3.budgetUsedKB) * 100) / 100).toBe(10.37);
+    // Wave 2 used +21.97 kB of it.
     const w2 = gate.bundleCheck({ file: 'main-w2.js', rawKB: 1073.23, gzipKB: 333.82 }) as Check;
-    expect(w2).toMatchObject({ deltaRawKB: 0, deltaGzipKB: 0, budgetUsedKB: 21.97, pass: true });
-    expect(w2.overWarningKB).toBe(73.23);
+    expect(w2).toMatchObject({
+      deltaRawKB: -50.22,
+      deltaGzipKB: -17.66,
+      budgetUsedKB: 21.97,
+      pass: true,
+    });
     const cfg = fs.readFileSync(path.resolve(__dirname, '../vite.config.ts'), 'utf8');
     expect(cfg).toMatch(/chunkSizeWarningLimit:\s*1000\b/);
   });
@@ -1191,8 +1213,8 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
       gate.bundleCheck({ file: 'main-x.js', rawKB, gzipKB }) as Check;
     const w1 = at(1004.45, 311.85);
     expect(w1).toMatchObject({
-      deltaRawKB: -68.78,
-      deltaGzipKB: -21.97,
+      deltaRawKB: -119,
+      deltaGzipKB: -39.63,
       budgetUsedKB: 0,
       overWarning: true,
       pass: true,
@@ -1203,7 +1225,7 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
     // A's Multiplayer move: about 1,059 kB raw, still over the warning.
     const moved = at(1059.16, 328.65);
     expect(moved).toMatchObject({ overWarning: true, pass: true });
-    expect(moved.deltaRawKB).toBe(-14.07);
+    expect(moved.deltaRawKB).toBe(-64.29);
     // Side A of an A/B is the baseline there.
     const ab = gate.bundleCheck(
       { file: 'main-b.js', rawKB: 1005.55, gzipKB: 312.11 },
@@ -1212,16 +1234,60 @@ describe('perf gate: the bundle check (wave-2 amendments)', () => {
     expect([ab.deltaRawKB, ab.deltaGzipKB]).toEqual([1.1, 0.26]);
   });
 
-  test('the report names a lazy-load candidate with its measured size', () => {
-    const c = gate.BUNDLE.lazyCandidate;
-    expect(c.module).toBe('Multiplayer.ts');
-    expect(c.minKB).toBeGreaterThan(gate.BUNDLE.wave1.rawKB - gate.BUNDLE.warnKB);
-    expect(c.gzipKB).toBeGreaterThan(0);
-    expect(fs.existsSync(path.resolve(__dirname, '..', c.module))).toBe(true);
-    const n = gate.BUNDLE.nextCandidate;
-    expect(n.module).toBe('Chat.ts');
-    expect(n.gzipKB).toBeGreaterThan(0);
-    expect(fs.existsSync(path.resolve(__dirname, '..', n.module))).toBe(true);
+  // Wave-4 integration: the pinned candidate (Multiplayer.ts) was already its
+  // own chunk. The report now measures the tree and skips what the dist splits.
+  test('the lazy-load candidate is a measured eager module the dist has not split off', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-lazy-'));
+    try {
+      const w = (f: string, s: string) => fs.writeFileSync(path.join(root, f), s);
+      w('index.html', '<script type="module" src="/entry.ts"></script>');
+      w(
+        'entry.ts',
+        "import { big } from './Big';\nimport { mid } from './Mid';\nimport { small } from './Small';\n" +
+          "void import('./Lazy');\nconsole.log(big, mid, small);\n",
+      );
+      const body = (name: string, n: number) =>
+        `export const ${name} = [${Array.from({ length: n }, (_, i) => `'${name}${i}'`).join(',')}];\n`;
+      w('Big.ts', body('big', 400));
+      w('Mid.ts', body('mid', 200));
+      w('Small.ts', body('small', 20));
+      w('Lazy.ts', body('lazy', 800));
+      // No dist: Lazy (import() only) is never eager; Big leads, then Mid.
+      const none = gate.lazyCandidates(root, null);
+      expect(none.error).toBeNull();
+      expect(none.candidates.map((c) => c.module)).toEqual(['Big.ts', 'Mid.ts']);
+      expect(none.candidates[0].importers).toEqual(['entry.ts']);
+      expect(none.candidates[0].minKB).toBeGreaterThan(none.candidates[1].minKB);
+      expect(none.candidates[0].gzipKB).toBeGreaterThan(0);
+      // A dist that already splits Big off: the report moves on to a real eager module.
+      const dist = path.join(root, 'dist');
+      fs.mkdirSync(path.join(dist, 'assets'), { recursive: true });
+      for (const f of [
+        'main-AAAAAAAA.js',
+        'three-BBBBBBBB.js',
+        'Big-Ab_c-123.js',
+        'Lazy-CCCCCCCC.js',
+      ])
+        fs.writeFileSync(path.join(dist, 'assets', f), 'x');
+      expect([...gate.splitChunks(dist)].sort()).toEqual(['Big', 'Lazy']);
+      const lc = gate.lazyCandidates(root, dist);
+      expect(lc.candidates.map((c) => c.module)).toEqual(['Mid.ts', 'Small.ts']);
+      const line = gate.fmtCandidates(lc);
+      expect(line).toMatch(
+        /^next lazy-load candidate: Mid\.ts, [\d.]+ kB minified, [\d.]+ kB gzip \(imported by entry\.ts\)/,
+      );
+      expect(line).toMatch(/already split: Big, Lazy$/);
+      // A tree it cannot bundle is reported, never thrown.
+      fs.rmSync(path.join(root, 'index.html'));
+      const bad = gate.lazyCandidates(root, dist);
+      expect(bad.candidates).toEqual([]);
+      expect(gate.fmtCandidates(bad)).toMatch(/^lazy-load candidate not measured: /);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+    // The whole-file exclusions stay a short documented list.
+    expect(gate.BUNDLE.beforeCard.length).toBeGreaterThanOrEqual(4);
+    expect(gate.BUNDLE.beforeCard.every((f) => f.endsWith('.ts'))).toBe(true);
   });
 });
 
@@ -1269,5 +1335,60 @@ describe('perf gate: the quiet-host note (wave-2 amendments)', () => {
     ) as string;
     expect(readme).toMatch(/no GPU regression at 21 h/);
     expect(readme).not.toMatch(/GPU at 21 h improves by 0\.5 ms or more"\s+is/);
+  });
+});
+
+// Wave 4 (C9's contract): --fx canopySway holds the effect to plan-r3's own
+// bars, not the tier's generic ones, and reads null on a build without it.
+describe('perf gate: the canopySway bars', () => {
+  const gate = createRequire(import.meta.url)('../tools/perf-gate.cjs') as {
+    FX_LEDGER: Record<string, unknown>;
+    THRESHOLDS: Record<string, Record<string, number>>;
+    fxBar: (name: string, key: string, fallback: number | null) => number | null;
+  };
+
+  test('GPU p50 +0.3 ms, no program added, 0 µs on the ledger', () => {
+    expect(gate.fxBar('canopySway', 'gpuP50', gate.THRESHOLDS.desktop.gpuP50)).toBe(0.3);
+    expect(gate.fxBar('canopySway', 'programs', gate.THRESHOLDS.desktop.programs)).toBe(0);
+    expect(gate.FX_LEDGER.canopySway).toBe(0);
+  });
+
+  // Wave-4 amendments (rows list): B9's glint, off on the low tier.
+  test('coinGlint: 20 µs on desktop, 0 on the low tier, one program', () => {
+    expect(gate.FX_LEDGER.coinGlint).toEqual({ desktop: 20, lowtier: 0 });
+    expect(gate.fxBar('coinGlint', 'programs', gate.THRESHOLDS.desktop.programs)).toBe(1);
+    expect(gate.fxBar('coinGlint', 'gpuP50', gate.THRESHOLDS.desktop.gpuP50)).toBe(
+      gate.THRESHOLDS.desktop.gpuP50,
+    );
+  });
+
+  test('other effects keep the tier bars', () => {
+    expect(gate.fxBar('halfShadow', 'gpuP50', gate.THRESHOLDS.lowtier.gpuP50)).toBe(
+      gate.THRESHOLDS.lowtier.gpuP50,
+    );
+    expect(gate.fxBar('dust', 'programs', 5)).toBe(5);
+  });
+});
+
+// Wave-3 E review nit (wave-4 amendments, carry-over): MODAL_INIT, BUSY and
+// the modal helpers were inserted between modeFx's JSDoc and modeFx, so the
+// JSDoc documented MODAL_INIT. It sits directly above modeFx again.
+describe('perf gate: modeFx keeps its JSDoc (wave-3 E review nit)', () => {
+  test("the '--fx <name>' JSDoc is the block right above async function modeFx", () => {
+    const req = createRequire(import.meta.url);
+    const fs = req('node:fs') as typeof import('node:fs');
+    const path = req('node:path') as typeof import('node:path');
+    const src = fs
+      .readFileSync(path.resolve(__dirname, '../tools/perf-gate.cjs'), 'utf8')
+      .replace(/\r\n/g, '\n');
+    const at = src.indexOf('\nasync function modeFx(');
+    expect(at).toBeGreaterThan(0);
+    const before = src.slice(0, at);
+    const open = before.lastIndexOf('/**');
+    expect(before.slice(open)).toMatch(
+      /^\/\*\*\n \* --fx <name>: the effect starts OFF[\s\S]*\*\/$/,
+    );
+    expect(src.slice(open - 200, open)).not.toMatch(/MODAL_INIT/);
+    expect(src.indexOf('--fx <name>: the effect starts OFF')).toBe(open + 7);
   });
 });

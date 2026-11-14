@@ -4,7 +4,7 @@
 // its report (docs/history/2026-11-03-ux-audit/motion.json: MOT-05, MOT-06,
 // MOT-18) and checked against the numbers it recorded on 58c8849.
 //
-//   npm run probe -- camera [--part talk,tour,parked,door,force] [--force 0.8] --dist dist --port <n>
+//   npm run probe -- camera [--part talk,tour,mirror,parked,door,force] [--force 0.8] --dist dist --port <n>
 //
 // - talk: the conversation camera's turn per frame on the push-in, on the
 //   release and in the frames after;
@@ -192,30 +192,188 @@ async function talk(t, prof) {
 async function tour(t, prof) {
   const s = await open(t, prof, { card: true });
   const { page } = s;
+  // D9 put Full tour behind 'More ways to explore' (wave-4 carry-over): until
+  // it opens the button's rect is 0x0 and a click there starts nothing, so
+  // every tour row passed on an idle camera.
+  const disclosure = await lib.openWelcomeDisclosure(page, 'button[data-tour]');
   const xy = await page.evaluate((sel) => {
     const b = document.querySelector(`${sel} button[data-tour]`);
     if (!b) return null;
     b.scrollIntoView({ block: 'center' });
     const r = b.getBoundingClientRect();
-    return [r.left + r.width / 2, r.top + r.height / 2];
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
   }, lib.WELCOME);
   if (!xy) {
     await s.close();
-    return { error: 'no tour button on the welcome card (button[data-tour])' };
+    return { error: 'no tour button on the welcome card (button[data-tour])', disclosure };
+  }
+  if (!(xy.w > 0 && xy.h > 0)) {
+    await s.close();
+    return { inconclusive: `the tour button's rect is empty (${xy.w}x${xy.h}; disclosure ${disclosure})`, disclosure };
   }
   const recP = page.evaluate(() => window.__camRec.record(14000, 'inside'));
   await lib.sleep(150);
-  await page.mouse.click(xy[0], xy[1]);
+  await page.mouse.click(xy.x, xy.y);
   const rows = await recP;
   await t.shot(page, `camera-${prof}-tour.png`);
   const at = rows.findIndex((r) => r.deg > 0.05);
-  const moving = at >= 0 ? rows.slice(at) : rows;
+  if (at < 0) {
+    await s.close();
+    return { inconclusive: `the recorder never saw a turn over 0.05 deg in ${rows.length} frames (the tour did not start)`, disclosure, frames: rows.length };
+  }
+  const moving = rows.slice(at);
   const walls = moving.filter((r) => r.wall !== null && r.wall !== undefined);
-  const out = { ...sum(moving), framesInsideABuilding: walls.length, firstInsideAtMs: walls.length ? walls[0].t : null, insideOf: [...new Set(walls.map((r) => r.wall))], maxDegPerSecond: lib.round(Math.max(0, ...moving.map((r) => (r.dt > 0 ? (r.deg * 1000) / r.dt : 0))), 0) };
+  const out = { disclosure, ...sum(moving), framesInsideABuilding: walls.length, firstInsideAtMs: walls.length ? walls[0].t : null, insideOf: [...new Set(walls.map((r) => r.wall))], maxDegPerSecond: lib.round(Math.max(0, ...moving.map((r) => (r.dt > 0 ? (r.deg * 1000) / r.dt : 0))), 0) };
   await page.evaluate(() => {
     const a = window.__app;
     if (typeof a.endTour === 'function') a.endTour();
   });
+  await s.close();
+  return out;
+}
+
+/**
+ * P2-A14 (wave-4 rows list): equip a hat at the kiosk and record every frame
+ * for 1.5 s whether the camera sits inside a mesh near the player (the world
+ * boxes of the props within 6 u, the avatar as a 0.3 u capsule), with the
+ * camera's dot against the avatar's forward; then open Customise and read the
+ * avatar's share of the frame (its posed vertices' projected box).
+ */
+const MIRROR_INSTALL = () => {
+  const sc = window.__app.scene;
+  const cam = sc.getCamera();
+  const pl = sc.getPlayer();
+  const p = pl.getWorldPosition();
+  const V = p.constructor;
+  const boxes = [];
+  const Box3 = (() => {
+    let B = null;
+    sc.traverse((o) => {
+      if (!B && o.isMesh && o.geometry) {
+        o.geometry.computeBoundingBox();
+        B = o.geometry.boundingBox.constructor;
+      }
+    });
+    return B;
+  })();
+  const isPlayer = (o) => {
+    for (let q = o; q; q = q.parent) if (q === pl) return true;
+    return false;
+  };
+  sc.traverse((o) => {
+    if (!o.isMesh || !o.visible || !o.geometry || (o.userData && o.userData.isCelHull) || (o.material && o.material.transparent) || o.isInstancedMesh || isPlayer(o)) return;
+    const b = new Box3().setFromObject(o);
+    const sz = Math.max(b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z);
+    if (sz > 20 || b.distanceToPoint(p) > 6) return;
+    boxes.push({ b, label: o.name || o.parent?.name || o.type });
+  });
+  const up = p.clone().normalize();
+  window.__mirror = {
+    boxes: boxes.length,
+    frame: () => {
+      const c = cam.position;
+      let inside = null;
+      for (const { b, label } of boxes) if (b.containsPoint(c)) inside = label;
+      const f = pl.getWorldPosition();
+      const rel = c.clone().sub(f);
+      const h = rel.dot(up);
+      const lat = rel.addScaledVector(up, -h).length();
+      if (h > 0 && h < 1.8 && lat < 0.3) inside = 'avatar';
+      const fwd = new V(0, 0, 1).applyQuaternion(pl.quaternion);
+      fwd.addScaledVector(up, -fwd.dot(up)).normalize();
+      const dir = cam.getWorldDirection(new V());
+      dir.addScaledVector(up, -dir.dot(up)).normalize();
+      return { inside, dot: +dir.dot(fwd).toFixed(2) };
+    },
+    share: () => {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      const tmp = new V();
+      pl.traverse((m) => {
+        if (!m.isMesh || !m.geometry || !m.visible || !m.geometry.attributes.position) return;
+        const a = m.geometry.attributes.position;
+        const step = Math.max(1, Math.floor(a.count / 300));
+        for (let i = 0; i < a.count; i += step) {
+          if (m.isSkinnedMesh) m.getVertexPosition(i, tmp);
+          else tmp.fromBufferAttribute(a, i);
+          const v = tmp.applyMatrix4(m.matrixWorld).project(cam);
+          if (v.z > 1) continue;
+          minX = Math.min(minX, v.x);
+          maxX = Math.max(maxX, v.x);
+          minY = Math.min(minY, v.y);
+          maxY = Math.max(maxY, v.y);
+        }
+      });
+      const cl = (x) => Math.max(-1, Math.min(1, x));
+      const w = (cl(maxX) - cl(minX)) / 2;
+      const h2 = (cl(maxY) - cl(minY)) / 2;
+      return Number.isFinite(w) && Number.isFinite(h2) ? +(Math.max(0, w) * Math.max(0, h2) * 100).toFixed(1) : null;
+    },
+  };
+  return { boxes: boxes.length, hasMirrorPose: typeof sc.getOrbitCamera().setMirrorPose === 'function' };
+};
+
+async function mirror(t, prof) {
+  const s = await open(t, prof);
+  const { page } = s;
+  const out = await page.evaluate(MIRROR_INSTALL);
+  await page.evaluate(() => {
+    window.__app.scene.addCoins(60);
+    window.__app.openShop();
+  });
+  await lib.sleep(900);
+  await page.evaluate(() => {
+    const b = window.__app.ui.shopDiv && window.__app.ui.shopDiv.querySelector('button[data-shop-tab="hats"]');
+    if (b) b.click();
+  });
+  await lib.sleep(600);
+  // Buy the first affordable hat; the equip is its second click (or the first, when buying equips).
+  const id = await page.evaluate(() => {
+    const d = window.__app.ui.shopDiv;
+    const b = d && [...d.querySelectorAll('button[data-shop-id]')].find((x) => !x.disabled);
+    if (!b) return null;
+    b.click();
+    return b.getAttribute('data-shop-id');
+  });
+  if (!id) {
+    await s.close();
+    return { ...out, error: 'no affordable hat in the shop' };
+  }
+  await lib.sleep(500);
+  const framesP = page.evaluate(
+    () =>
+      new Promise((res) => {
+        const rows = [];
+        const t0 = performance.now();
+        const tick = () => {
+          rows.push({ t: Math.round(performance.now() - t0), ...window.__mirror.frame() });
+          if (performance.now() - t0 < 1500) requestAnimationFrame(tick);
+          else res(rows);
+        };
+        requestAnimationFrame(tick);
+      }),
+  );
+  await page.evaluate((hid) => {
+    const d = window.__app.ui.shopDiv;
+    const b = d && d.querySelector(`button[data-shop-id="${hid}"]`);
+    if (b && /Equip$/.test(b.textContent.trim()) && !b.disabled) b.click();
+  }, id);
+  const frames = await framesP;
+  await t.shot(page, `camera-${prof}-mirror-equip.png`);
+  out.equip = { hat: id, frames: frames.length, insideFrames: frames.filter((f) => f.inside).length, insideOf: [...new Set(frames.filter((f) => f.inside).map((f) => f.inside))], lastDot: frames.length ? frames[frames.length - 1].dot : null };
+  await page.evaluate(() => window.__app.ui.panels.closeAll());
+  await lib.sleep(800);
+  const opened = await page.evaluate(() => {
+    const a = window.__app;
+    if (typeof a.openCustomize !== 'function') return false;
+    a.openCustomize();
+    return true;
+  });
+  await lib.sleep(1200);
+  out.customise = opened ? { open: !!(await page.evaluate(() => window.__app.ui.customizeDiv && window.__app.ui.customizeDiv.isConnected)), sharePct: await page.evaluate(() => window.__mirror.share()) } : { error: 'no openCustomize' };
+  await t.shot(page, `camera-${prof}-mirror-customise.png`);
   await s.close();
   return out;
 }
@@ -441,10 +599,21 @@ async function camera(t) {
     if (parts.includes('tour')) {
       await run('tour', () => tour(t, prof));
       const k = out.tour;
-      // MOT-18.
-      t.check(`${prof}: the tour's first frame (degrees)`, k.error ? null : k.firstFrameDeg < 1, k.error || k.firstFrameDeg, '< 1');
-      t.check(`${prof}: the tour's largest turn per frame (degrees)`, k.error ? null : k.maxDegPerFrame < 2, k.error || `${k.maxDegPerFrame} (${k.maxDegPerSecond} deg/s)`, '< 2');
-      t.check(`${prof}: tour frames with the camera inside a building`, k.error ? null : k.framesInsideABuilding === 0, k.error || (k.framesInsideABuilding ? `${k.framesInsideABuilding} (first at ${k.firstInsideAtMs} ms, in ${k.insideOf.join(', ')})` : 0), 0);
+      // MOT-18 and MOT-06 (A's fix in wave 4). Inconclusive (null, exit 3)
+      // when the button had an empty rect or the camera never turned.
+      // Baselines (w3-unhold rv-camera-tourfix-*): merged wave 3 9.21 deg/frame,
+      // 25 frames over 2 deg, peak at 7756 ms; wave-2 main 9.42 deg, 34 frames,
+      // a 9.42 deg first frame.
+      const no = k.error || k.inconclusive;
+      t.check(`${prof}: the tour's first frame (degrees)`, no ? null : k.firstFrameDeg < 1, no || k.firstFrameDeg, '< 1');
+      t.check(`${prof}: the tour's largest turn per frame (degrees)`, no ? null : k.maxDegPerFrame < 2, no || `${k.maxDegPerFrame} at ${k.maxAtMs} ms (${k.maxDegPerSecond} deg/s; ${k.over2deg} frames over 2 deg)`, '< 2');
+      t.check(`${prof}: tour frames with the camera inside a building`, no ? null : k.framesInsideABuilding === 0, no || (k.framesInsideABuilding ? `${k.framesInsideABuilding} (first at ${k.firstInsideAtMs} ms, in ${k.insideOf.join(', ')})` : 0), 0);
+    }
+    if (parts.includes('mirror')) {
+      await run('mirror', () => mirror(t, prof));
+      const k = out.mirror;
+      t.check(`${prof}: after a hat equip, frames with the camera inside a mesh (P2-A14)`, k.error ? null : k.equip.insideFrames === 0, k.error || `${k.equip.insideFrames} of ${k.equip.frames}${k.equip.insideOf.length ? ` (in ${k.equip.insideOf.join(', ')})` : ''}; last dot ${k.equip.lastDot}${k.hasMirrorPose ? '' : ' (no setMirrorPose on this build)'}`, '0 (screenshot camera-desktop-mirror-equip.png)');
+      t.check(`${prof}: at Customise the avatar's share of the frame (P2-A14)`, k.error || !k.customise.open ? null : k.customise.sharePct > 3, k.error || k.customise, '> 3%');
     }
     if (parts.includes('parked')) {
       await run('parked', () => parked(t, prof));

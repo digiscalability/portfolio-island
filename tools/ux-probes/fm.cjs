@@ -507,17 +507,7 @@ async function tours(t) {
   const tw = await ptime(p);
   await untilPage(p, tw + 2000);
   // D9 moves Full tour behind 'More ways to explore': open the disclosure first.
-  const disclosure = await p.evaluate((W) => {
-    const card = document.querySelector(W);
-    const tour = card && card.querySelector('button[data-tour]');
-    const shown = tour && tour.getBoundingClientRect().height > 0 && getComputedStyle(tour).visibility !== 'hidden';
-    if (shown) return 'not needed';
-    const d = card && [...card.querySelectorAll('button,[role=button],summary')].find((x) => x.hasAttribute('aria-expanded') || /more ways/i.test(x.textContent || ''));
-    if (!d) return 'none found';
-    d.click();
-    return 'opened';
-  }, lib.WELCOME);
-  await lib.sleep(400);
+  const disclosure = await lib.openWelcomeDisclosure(p, 'button[data-tour]');
   await p.click(`${lib.WELCOME} button[data-tour]`);
   const ts = await ptime(p);
   let tEnd = null;

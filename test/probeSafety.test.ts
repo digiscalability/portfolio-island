@@ -396,6 +396,65 @@ describe('probe conventions: silent speech and a pinned clock (wave-2 amendments
     expect(() => vm.runInContext(conv.SILENT_TTS, bare)).not.toThrow();
   });
 
+  // Wave-4 review: B9 turns GameScene.coins into records with no .mesh, and
+  // E's probes must read both shapes the same way (null, never a throw).
+  test('every session gets COIN_READ, which reads both coin shapes', () => {
+    const lib = conv as typeof conv & { COIN_READ: string };
+    for (const o of [{}, { noKhr: true }, { clock: true }, { recaptchaStub: false }])
+      expect(conv.baseInitScripts(o)).toContain(lib.COIN_READ);
+    const g: Record<string, unknown> = {};
+    g.window = g;
+    vm.createContext(g);
+    vm.runInContext(lib.COIN_READ, g);
+    type Entry = { i: number; p: { x: number; y: number; z: number }; order: number };
+    const C = g.__uxCoin as {
+      list: (sc: unknown, o?: { trail?: boolean; all?: boolean }) => Entry[] | null;
+    };
+    class V {
+      constructor(
+        public x: number,
+        public y: number,
+        public z: number,
+      ) {}
+    }
+    const camera = { position: new V(0, 0, 0) };
+    const mesh = (x: number, visible: boolean, name = '', userData = {}) => ({
+      position: new V(x, 1, 0),
+      visible,
+      name,
+      userData,
+    });
+    const old = {
+      camera,
+      coins: [
+        { mesh: mesh(1, true) },
+        { mesh: mesh(2, false) },
+        { mesh: mesh(3, true, '', { collectT0: 5 }) },
+        { mesh: mesh(4, true, 'trail_coin_1'), trail: true },
+        { mesh: mesh(5, false, 'trail_coin_0'), trail: true },
+      ],
+    };
+    const b9 = {
+      camera,
+      coins: [
+        { pos: new V(1, 1, 0), quat: {}, home: {}, respawnAt: 0, idx: 0 },
+        { pos: new V(2, 1, 0), quat: {}, home: {}, respawnAt: 9, idx: 1 },
+        { pos: new V(3, 1, 0), quat: {}, home: {}, respawnAt: 0, collectT0: 5, idx: 2 },
+        { pos: new V(4, 1, 0), quat: {}, home: {}, respawnAt: 0, trail: true, idx: 4 },
+        { pos: new V(5, 1, 0), quat: {}, home: {}, respawnAt: 9, trail: true, idx: 3 },
+      ],
+    };
+    for (const sc of [old, b9]) {
+      expect(C.list(sc, { trail: false })!.map((e) => e.p.x)).toEqual([1]);
+      expect(C.list(sc, { trail: true })!.map((e) => e.p.x)).toEqual([4]);
+      const all = C.list(sc, { trail: true, all: true })!;
+      expect(all.sort((a, b) => a.order - b.order).map((e) => e.p.x)).toEqual([5, 4]);
+      expect(all[0].p).toBeInstanceOf(V);
+    }
+    expect(C.list({ camera })).toBeNull();
+    expect(C.list({ camera, coins: [{ foo: 1 }] })).toBeNull();
+  });
+
   test('only the harness launches a browser or opens a context', () => {
     // An ad hoc script that made its own context would skip the init scripts
     // (SILENT_TTS, the WebSocket stub) and the routes. Every script under
@@ -571,5 +630,31 @@ describe('probe fixes from wave 2 (wave-3 amendments)', () => {
     expect(guide.nightHours(true)).toEqual([21, 23, 2, 6]);
     expect(guide.nightHours(23)).toEqual([23]);
     expect(guide.nightHours('21, 2')).toEqual([21, 2]);
+  });
+});
+
+// Wave 4 (P2-E2d): p2/landmarks judges each site's prompt against a fixture
+// of the Projects boards. owners.json contractChecks lists this read of
+// SignPainter.ts ("the landmark probe's Fact Sheet table").
+describe("the landmark probe's Fact Sheet table (wave-4 amendments)", () => {
+  const req = createRequire(import.meta.url);
+  const fs = req('node:fs') as typeof import('node:fs');
+  const path = req('node:path') as typeof import('node:path');
+
+  test('p2/landmarks carries SignPainter.PROJECT_BOARDS exactly, in WORK_SITES order', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '../SignPainter.ts'), 'utf8');
+    const start = src.indexOf('export const PROJECT_BOARDS');
+    expect(start).toBeGreaterThan(-1);
+    const block = src.slice(start, src.indexOf('];', start));
+    const table = [
+      ...block.matchAll(/\{\s*name:\s*(['"])(.*?)\1,\s*status:\s*(['"])(.*?)\3\s*\}/g),
+    ].map((m) => ({ name: m[2], status: m[4] }));
+    const probe = req('../tools/ux-probes/p2/landmarks.cjs') as {
+      PROJECT_BOARDS: Array<{ name: string; status: string }>;
+      ANCHORS: string[];
+    };
+    expect(table).toHaveLength(5);
+    expect(probe.PROJECT_BOARDS).toEqual(table);
+    expect(probe.ANCHORS).toEqual(['rankpilot', 'chocomate', 'island', 'banos', 'insta']);
   });
 });

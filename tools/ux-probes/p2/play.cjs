@@ -11,6 +11,7 @@
 //
 //   npm run probe -- p2/firstplay [--device desk|phone] --dist dist --port <n>
 //   npm run probe -- p2/race      [--driver gates|compass] [--circuit land|water] [--device desk|phone] --dist dist --port <n>
+//   npm run probe -- p2/race --legs | --circuit water --craft boat   (P2-E2d) --dist dist --port <n>
 //   npm run probe -- p2/quests    [--device desk|phone] --dist dist --port <n>
 const lib = require('../lib.cjs');
 const G = require('./guide-lib.cjs');
@@ -159,11 +160,13 @@ async function firstplay(t) {
     const coins = await page.evaluate(() => {
       const sc = window.__app.scene;
       const p = sc.getPlayer().getWorldPosition();
-      return (sc.coins || []).filter((c) => c.trail && c.mesh.visible).map((c) => [...c.mesh.position.toArray(), c.mesh.position.distanceTo(p)]).sort((a, b) => a[3] - b[3]);
+      // Either coin shape (lib COIN_READ); null when neither is present.
+      const l = window.__uxCoin.list(sc, { trail: true });
+      return l ? l.map((e) => [e.p.x, e.p.y, e.p.z, e.p.distanceTo(p)]).sort((a, b) => a[3] - b[3]) : null;
     });
     const t0 = Date.now();
-    for (const c of coins) await G.walkTo(page, c.slice(0, 3), 6000, 0.9);
-    out.trail = { coins: coins.length, seconds: +((Date.now() - t0) / 1000).toFixed(1), collected: await page.evaluate(() => window.__app.scene.getCoinsCollected()) };
+    for (const c of coins || []) await G.walkTo(page, c.slice(0, 3), 6000, 0.9);
+    out.trail = { coins: coins ? coins.length : null, seconds: +((Date.now() - t0) / 1000).toFixed(1), collected: await page.evaluate(() => window.__app.scene.getCoinsCollected()) };
     const who = await page.evaluate(() => {
       const sc = window.__app.scene;
       const p = sc.getPlayer().getWorldPosition();
@@ -285,12 +288,12 @@ const RACE = () => {
   };
 };
 /** Board the craft nearest the circuit's start and put it 14 u before ring 0, heading through it. */
-const RACE_SETUP = ({ kind }) => {
+const RACE_SETUP = ({ kind, craft }) => {
   const sc = window.__app.scene;
   const c = sc.races && sc.races.circuits ? sc.races.circuits[kind] : null;
   if (!c || !c.dirs || c.dirs.length < 3) return { error: 'hook missing: scene.races.circuits' };
   const start = sc.getRaceStartPosition(kind);
-  const want = kind === 'land' ? ['car'] : ['jetski', 'boat'];
+  const want = craft ? [craft] : kind === 'land' ? ['car'] : ['jetski', 'boat'];
   let idx = -1;
   let best = Infinity;
   for (let i = 0; i < sc.vehicles.length; i++) {
@@ -314,6 +317,9 @@ const RACE_SETUP = ({ kind }) => {
   const f2 = a.clone().addScaledVector(back, -a.dot(back)).normalize();
   sc.boardVehicle(idx);
   if (!sc.isRidingVehicle()) return { error: 'boardVehicle did not board' };
+  window.__race = { kind, idx };
+  // --craft: start from where that craft is parked, as a visitor would.
+  if (craft) return { idx, craft: sc.vehicleKind(idx), craftToStartU: +best.toFixed(1), rings: c.dirs.length, parked: true };
   v.dir.copy(back);
   v.forward.copy(f2);
   if (kind === 'land') {
@@ -340,7 +346,12 @@ const RACE_STEER = ({ driver }) => {
   const next = c.dirs[r.state === 'running' ? r.nextIdx : 0].clone().normalize();
   const dist = up.angleTo(next) * R;
   let rel;
-  if (driver === 'compass') {
+  // The compass steers only once the race runs. Before the start there is no
+  // ring on the pill (often no pill at all: rel null drives straight on), so
+  // the car never crossed the start line and the race never began (0
+  // checkpoints in 150 s on both builds). Until then it steers to the start
+  // line, as the gates driver does.
+  if (driver === 'compass' && r.state === 'running') {
     // Only what the pill shows: its arrow's screen bearing (A1's sign: + is clockwise, to the right).
     const a = window.__h.arrow();
     rel = a ? a.rel : null;
@@ -358,6 +369,97 @@ const RACE_STEER = ({ driver }) => {
   const camToRing = cam.clone().normalize().angleTo(next) * R;
   return { rel, dist: +dist.toFixed(1), state: r.state, nextIdx: r.nextIdx, belowHorizon: camToRing > horizon, camToRingU: +camToRing.toFixed(1), horizonU: +horizon.toFixed(1), riding: sc.isRidingVehicle() };
 };
+
+/**
+ * --legs: every consecutive ring spacing on both circuits (ring i to i+1, and
+ * the last back to the finish, ring 0), great-circle u, against the chase
+ * camera's own horizon on foot: sqrt(2 R h), h its height over the player's
+ * feet (the audit's 1.37 u).
+ */
+const RACE_LEGS = () => {
+  const sc = window.__app.scene;
+  const isl = sc.getIsland();
+  const R = isl.getRadius();
+  const cam = sc.getCamera().position;
+  const pl = sc.getPlayer().getWorldPosition();
+  // The audit's horizon: the camera's height over the player's feet (1.37 u).
+  const hCam = cam.length() - pl.length();
+  const horizon = Math.sqrt(2 * R * Math.max(0.05, hCam));
+  const out = { R: +R.toFixed(1), camAbovePlayerU: +hCam.toFixed(2), camAboveGroundU: +(cam.length() - isl.analyticSurface(cam.clone().normalize()).radius).toFixed(2), horizonU: +horizon.toFixed(1), circuits: {} };
+  for (const kind of ['land', 'water']) {
+    const c = sc.races && sc.races.circuits ? sc.races.circuits[kind] : null;
+    if (!c || !c.dirs) continue;
+    const d = c.dirs.map((x) => x.clone().normalize());
+    const legs = d.map((a, i) => +(a.angleTo(d[(i + 1) % d.length]) * R).toFixed(1));
+    out.circuits[kind] = { rings: d.length, legs, meanU: +(legs.reduce((s, x) => s + x, 0) / legs.length).toFixed(1), maxU: Math.max(...legs), overHorizon: legs.filter((x) => x > horizon).length };
+  }
+  return out;
+};
+/**
+ * The boat against the shore. A craft's step onto land is refused
+ * (GameScene keeps craft on the sea), so a beaching reads as: the bow (1.5 u
+ * ahead along its forward) over land and the hull not moving between polls.
+ */
+const BOAT = () => {
+  const sc = window.__app.scene;
+  const g = window.__race;
+  const v = sc.vehicles[g.idx];
+  const r = sc.races;
+  const isl = sc.getIsland();
+  const R = isl.getRadius();
+  const up = v.dir.clone().normalize();
+  const f = v.forward.clone().addScaledVector(up, -v.forward.dot(up)).normalize();
+  const bow = up.clone().multiplyScalar(Math.cos(1.5 / R)).addScaledVector(f, Math.sin(1.5 / R)).normalize();
+  const prev = g.prevDir || up.clone();
+  const movedU = prev.angleTo(up) * R;
+  g.prevDir = up.clone();
+  return { bowOnLand: !isl.isOverWater(bow), movedU: +movedU.toFixed(3), state: r.state, nextIdx: r.nextIdx, riding: sc.isRidingVehicle() };
+};
+/** --craft boat: the gates driver from the parked boat for ms (backing out after 4 s aground); beachings and checkpoints passed. */
+async function driveBoat(page, ms) {
+  let held = new Set();
+  const set = async (keys) => {
+    for (const k of [...held]) if (!keys.has(k)) await page.keyboard.up(k);
+    for (const k of keys) await page.keyboard.down(k);
+    held = keys;
+  };
+  let beachings = 0;
+  let free = 4;
+  let stuckMs = 0;
+  let lastIdx = null;
+  let passed = 0;
+  let started = false;
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const s = await page.evaluate(RACE_STEER, { driver: 'gates' }).catch(() => null);
+    const b = await page.evaluate(BOAT).catch(() => null);
+    if (!s || !b || !b.riding) break;
+    // A beaching: the throttle held, the bow on land and the hull stopped.
+    // A new beaching only after 0.5 s afloat and moving (4 polls), so one
+    // grounding the steer rocks against counts once.
+    const beached = held.has('w') && b.bowOnLand && b.movedU < 0.05;
+    if (beached && free >= 4) beachings++;
+    free = beached ? 0 : free + 1;
+    // Stuck 4 s: back out and try again, as driveLap's driver does.
+    stuckMs = beached ? stuckMs + 120 : 0;
+    if (stuckMs > 4000) {
+      stuckMs = 0;
+      await set(new Set(['s']));
+      await lib.sleep(900);
+      continue;
+    }
+    if (b.state === 'running') {
+      if (!started) started = true;
+      else if (b.nextIdx !== lastIdx) passed++;
+      lastIdx = b.nextIdx;
+    }
+    if (s.rel === null || Math.abs(s.rel) < 10) await set(new Set(['w']));
+    else await set(new Set(['w', s.rel > 0 ? 'd' : 'a']));
+    await lib.sleep(120);
+  }
+  await set(new Set());
+  return { beachings, checkpointsPassed: passed, started, ms: Date.now() - t0 };
+}
 
 async function driveLap(page, driver, maxMs) {
   let held = new Set();
@@ -430,7 +532,50 @@ const FINISH = () => {
   return { panel: window.__app.ui.panels.current(), text: text.slice(0, 500), namePrompt: !!nameInput, selfName: mp && mp.selfName ? mp.selfName : null, storedName: localStorage.getItem('ds_player_name'), buttons: [...document.querySelectorAll('#ui-overlay button')].filter((b) => b.getBoundingClientRect().width > 2).map((b) => (b.textContent || '').replace(/\s+/g, ' ').trim()).filter((x) => /retry|board|leaderboard/i.test(x)) };
 };
 
+async function raceLegs(t) {
+  for (const prof of t.profiles(['desktop'])) {
+    const s = await t.session(prof);
+    const { page } = s;
+    await t.boot(s, { query: 'hour=12' });
+    await lib.sleep(1000);
+    await explore(page, false);
+    await skipGuide(page);
+    await lib.sleep(1500);
+    const legs = await page.evaluate(RACE_LEGS);
+    await s.close();
+    t.data[prof] = { legs };
+    for (const kind of ['land', 'water']) {
+      const c = legs.circuits[kind];
+      t.check(`${prof}: ${kind} circuit ring spacing against the chase-camera horizon (reported)`, c ? true : null, c ? { rings: c.rings, meanU: c.meanU, maxU: c.maxU, legs: c.legs, overHorizon: `${c.overHorizon} of ${c.legs.length}`, horizonU: legs.horizonU } : null, `reported (58c8849: ${kind === 'land' ? '115.5' : '103.9'} u, horizon 16.5 u)`);
+    }
+  }
+}
+
+async function raceBoat(t) {
+  for (const prof of t.profiles(['desktop'])) {
+    const s = await t.session(prof, { init: [P.SAMPLER], skipName: false });
+    const { page } = s;
+    await t.boot(s, { query: 'hour=12' });
+    await lib.sleep(1000);
+    await explore(page, false);
+    await skipGuide(page);
+    await lib.sleep(1500);
+    const setup = await page.evaluate(RACE_SETUP, { kind: 'water', craft: 'boat' });
+    if (setup.error) throw new Error(setup.error);
+    await lib.sleep(1200);
+    await t.shot(page, `race-${prof}-boat-start.png`);
+    const run = await driveBoat(page, 49000);
+    await t.shot(page, `race-${prof}-boat-end.png`);
+    await s.close();
+    t.data[prof] = { setup, run };
+    t.check(`${prof}: from the parked boat, checkpoints passed in 49 s (GP-03)`, run.checkpointsPassed >= 5, { passed: run.checkpointsPassed, started: run.started, craftToStartU: setup.craftToStartU }, '5 of 5 (58c8849: 0 of 5)');
+    t.check(`${prof}: beachings with the throttle held`, run.beachings === 0, run.beachings, '0 (58c8849: 9)');
+  }
+}
+
 async function race(t) {
+  if (t.args.legs) return raceLegs(t);
+  if (t.args.craft === 'boat') return raceBoat(t);
   const driver = t.args.driver === 'compass' ? 'compass' : 'gates';
   const kind = t.args.circuit === 'water' ? 'water' : 'land';
   const all = [];
@@ -515,26 +660,71 @@ async function quests(t) {
       return p ? p.toArray() : null;
     });
     if (!school) throw new Error('hook missing: scene.schoolPos()');
+    // P2-A9 (wave 4): the coins a fresh visitor holds on reaching the School
+    // (the trail and anything on the way; report-only).
+    const cArrive = await page.evaluate(() => window.__app.scene.getCoinsCollected());
     await page.evaluate(TP_NEAR, { p: school, dist: 1.2 });
     await lib.sleep(1200);
     const c0 = await page.evaluate(() => window.__app.scene.getCoinsCollected());
     const prompt0 = await page.evaluate(() => window.__g.prompt());
     const at = await G.ptime(page);
     const t0 = Date.now();
+    const perPress = [];
     for (let i = 0; i < 6; i++) {
+      const b = await page.evaluate(() => window.__app.scene.getCoinsCollected());
       await useKey(page, touch, T);
       await lib.sleep(380);
+      perPress.push((await page.evaluate(() => window.__app.scene.getCoinsCollected())) - b);
     }
     const pressMs = Date.now() - t0;
     await lib.sleep(1200);
     const c1 = await page.evaluate(() => window.__app.scene.getCoinsCollected());
+    // A9's enrolment flag; null on a build without it (fcaa649 and before).
+    const enrolled = await page.evaluate(() => {
+      try {
+        return localStorage.getItem('ds_school_enrolled');
+      } catch (e) {
+        return null;
+      }
+    });
     await t.shot(page, `quests-${prof}-school.png`);
+    // Close the lessons sheet A9 opens, if any, before the rest of the run.
+    await page.evaluate(() => {
+      const ui = window.__app.ui;
+      if (ui.panels && ui.panels.closeAll) ui.panels.closeAll();
+    });
     await lib.sleep(9000);
     const lessonToasts = (await P.gpEvents(page, at)).filter((e) => (e.ev === 'show' || e.ev === 'text') && /Lesson/i.test(e.text)).map((e) => e.text.slice(0, 110));
-    out.school = { prompt: prompt0, coinsBefore: c0, coinsAfter: c1, paid: c1 - c0, pressSeconds: +(pressMs / 1000).toFixed(1), lessonToasts: [...new Set(lessonToasts)] };
+    out.school = { coinsOnArrival: cArrive, prompt: prompt0, coinsBefore: c0, coinsAfter: c1, paid: c1 - c0, perPress, enrolled, pressSeconds: +(pressMs / 1000).toFixed(1), lessonToasts: [...new Set(lessonToasts)] };
     t.log(`${prof} school: ${JSON.stringify(out.school)}`);
-    // GP-04: six presses used to pay +60 in 2 s; the fix pays one lesson (+10) a visit.
-    t.check(`${prof}: six presses at the School pay (coins)`, /lesson/i.test(prompt0 || '') ? out.school.paid <= 10 : null, /lesson/i.test(prompt0 || '') ? out.school.paid : `no lesson prompt at the School: '${prompt0}'`, '<= +10 (main: +60)');
+    // GP-04 and P2-A9: six presses used to pay +60 in 2 s; A9 pays 'move' once
+    // at enrolment (+10) and nothing more for the presses.
+    const lessonPrompt = /lesson|school/i.test(prompt0 || '');
+    t.check(`${prof}: six presses at the School pay exactly +10 on a fresh visitor (P2-A9)`, lessonPrompt ? out.school.paid === 10 : null, lessonPrompt ? `${out.school.paid} (per press ${perPress.join(', ')})` : `no lesson prompt at the School: '${prompt0}'`, '+10 exactly (main fcaa649: +60)');
+    t.check(`${prof}: enrolment pays the move lesson on the first press, then nothing (P2-A9)`, enrolled ? perPress[0] === 10 && perPress.slice(1).every((d) => d === 0) : null, enrolled ? perPress : 'no ds_school_enrolled on this build', '[10, 0, 0, 0, 0, 0] (null: no enrolment)');
+
+    // P2-A9: after enrolment, the first cast pays lesson 2 (+10). The rod is
+    // handed over in-page (ownedRod) so the cast is the lesson's first action.
+    if (enrolled) {
+      const F = require('./loops.cjs').fishKit;
+      await page.evaluate(() => {
+        window.__app.ownedRod = true;
+      });
+      const sp = await F.toShore(page).catch(() => null);
+      if (sp) {
+        const b = await page.evaluate(() => window.__app.scene.getCoinsCollected());
+        const r = await F.cast(page, touch, T);
+        await lib.sleep(1500);
+        const a = await page.evaluate(() => window.__app.scene.getCoinsCollected());
+        out.firstCast = { spot: sp, landedMs: r.landedMs, paid: a - b };
+        await page.evaluate(() => {
+          const sc = window.__app.scene;
+          if (sc.isFishingActive()) sc.reelLine();
+        });
+        await F.untilIdle(page, 4000);
+      } else out.firstCast = { why: 'no shore spot offered the cast' };
+    } else out.firstCast = { why: 'no ds_school_enrolled on this build' };
+    t.check(`${prof}: the first cast after enrolment pays lesson 2, +10 (P2-A9)`, out.firstCast.paid !== undefined ? out.firstCast.paid === 10 : null, out.firstCast.paid !== undefined ? out.firstCast.paid : out.firstCast.why, '+10 (null: no enrolment or no shore spot)');
 
     // P2-E2c: the canteen double press (P2-A6). Two E presses 150 ms apart,
     // empty-handed: coins and soups before and after.
@@ -622,7 +812,7 @@ async function quests(t) {
 
 module.exports = {
   firstplay: { item: 'P2-E2b (GP-02, GP-08; P2-D4)', title: "the first play: the trail, its villager, and five questions with the backend blocked (the reply, its button, where the button leads, the badge)", profiles: ['desktop', 'phone'], run: firstplay },
-  race: { item: 'P2-E2b (GP-03, GP-05; P2-A7, D10)', title: "a lap by the gates' positions (or --driver compass: by the compass pill alone): the next ring against the horizon, the HUD over the pill, district toasts, the finish modal, the name prompt", profiles: ['desktop', 'phone'], run: race },
+  race: { item: 'P2-E2b (GP-03, GP-05; P2-A7, D10)', title: "a lap by the gates' positions (or --driver compass: by the compass pill alone): the next ring against the horizon, the HUD over the pill, district toasts, the finish modal, the name prompt. --legs: every ring spacing on both circuits against the horizon; --circuit water --craft boat: from the parked boat, beachings and checkpoints in 49 s (P2-E2d)", profiles: ['desktop', 'phone'], run: race },
   quests: { item: 'P2-E2b (GP-04, GP-07, GP-10; P2-A7); P2-E2c canteen', title: "six presses at the School, the canteen double press (coins and soups), the Elder Sage's prompt and what E does after her quest, the parcel prompt", profiles: ['desktop'], run: quests },
   // Helpers for the top-level npc.cjs (functions, not probes: run.cjs registers only {run}).
   openChat,

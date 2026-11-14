@@ -591,6 +591,103 @@ as above.
 | `p2/tour` | GP-01, GP-04; P2-D10, P2-A10 | desktop and phone: the four districts walked (play-lib's steerer, run held) and entered by the door: stamps, coins, minutes, the last `ds:goals` visit; after the fourth stamp the celebration's text: 'Next:' and 'Your visit' | 4 stamps, 6 and 5 coins, about 2 min; the card reads 'Portfolio complete! … Wear it with pride', no 'Next:' and no visit block (null); no `ds:goals` | 4 stamps, 5 and 8 coins; the same card; `ds:goals` visit {stamps 4, villagers 0, coins 5/8, secrets 1/2, minutes 2} |
 | `p2/quests` (canteen row) | P2-A6 | desktop: empty-handed at the canteen, two E presses 150 ms apart: soups and coins | 2 soups, -6 coins | the same |
 
+### Stage-2 probes, wave 4 (E6d)
+
+Top-level probes, registered in `run.cjs`'s `GROUPS`. The audit's scripts
+(`motion/slide2`, `swim`, `env_juice`; `design-assets/fonts-cdp`, `loader`,
+`texgen-time`, `webp-edge`; `perf-headroom/bundles.cjs`) were session temp
+files and are gone, so these are rebuilt from the reports
+(`ux-audit/results/motion.json`, `design.json`, `performance.json`) and
+checked against the numbers recorded there. Every row reads a wave-4 feature
+optionally and reports null, not fail, on a build without it. Baselines
+2026-11-14 at `?hour=12`: 58c8849 (`ux-audit/dist`) and wave-3 main
+(`deploy-w3/dist`, a local build of fcaa649), 0 leaks and a boot proof in
+every session, the port free afterwards, four other builders on the machine
+(counts hold, milliseconds are provisional).
+
+| Probe | Item | What it measures | 58c8849 | wave-3 main (fcaa649) |
+|---|---|---|---|---|
+| `slide` | MOT-04, MOT-20; B3 | desktop, the frozen sim at 1/60 s: W held, then the build's run key (`html[data-run-key]`, else Space). Per leg the sole is the centroid of the 8 lowest bind-pose vertices skinned to `legL`/`legR`; each frame the lower sole's tangential world speed over `getTangentialSpeed()`, its minimum per walk cycle, `bestPlantRatio` the median of those. The bob's lowest frame per half-cycle against the nearest heel strike (`getGaitState?.().bob`, else the model's radial height; null when nothing bobs). Peak hip flexion at the run: the quaternion angle of `legL`/`legR` from the bind rest. turn180: W then S, the model's heading rate, peak °/s and t90 | walk 0.359 at 5.59 u/s (the audit 0.33 at 5.32 u/s: the same 2.0 u/s sole over a faster body), run 0.364 at 8.12 u/s (audit 0.36); no bob; flexion 0.65 rad; turn180 1603°/s, t90 200 ms (audit 1603°/s, 217 ms). Exits 1 | the same: walk 0.359, run 0.365 (Shift), no bob, flexion 0.65 rad, 1603°/s, t90 200 ms. Exits 1 |
+| `swim` | MOT-08; B5 | desktop, the frozen sim at 1/60 s: from 5 u inland on the camera's heading, W, then the swim button (Space) once over water; stroke, two tread/stroke rounds across the 0.4 u/s gate, a dive (Shift), S back to shore and out. A pop is the quaternion angle of `armL`, `armR`, `legL`, `legR` or the model (body pitch) between consecutive frames over 25°, never an Euler delta. B5 diffs its pose with `rig --compare` | 15 pops: entry armR 159°, gate armL 168°/159°, stroke armR 100°/93°, dive armL 150°, exit armR 161°, body 78° (the audit: 126°, 136°/126°, 48°, 151°, 77°: the same five moments). Exits 1 | the same 15 pops within 6°. Exits 1 |
+| `env` | MOT-16, MOT-22; B9, C9 | desktop, the frozen sim, judged by pixels (`--part coin\|canopy`). coin: 3.5 u short of the nearest meadow coin (`scene.coins`, never the trail's), the chase camera turned to it, W held; from the frame the count steps, 8 frames over 450 ms: a frame counts when gold pixels (the hue of #ffd34a ±12°, saturated, bright) above the head's projected top (the posed mesh's highest vertex) beat the frame before the pickup by 8; `ds:coin`'s detail recorded when dispatched. canopy: 26 u from a tree near the spawn, the camera 14° beside it; every sway tree 20-40 u from the camera with sky above its projected top: the topmost silhouette pixel each 100 ms for 6 s, travel = its peak-to-peak excursion; the CPU projection of the group's top beside it (the group sway alone), and shaderOnly = pixels − CPU | coin 0 of 8 (inside the silhouette, as the audit found); no `ds:coin`. canopy 3.4 px median, 1.5-7.5 px over 4 trees at 30-33 u; the CPU group sway 1.0-10.1 px (the audit 0.9-4.3 px). Exits 1 | coin 0 of 8; canopy 3.4 px median (1.5-6.5), CPU 1.0-9.1 px. Exits 1 |
+| `texgen` | DA-12; C7 | desktop at 4x CPU (CDP; `--cpu <n>`), the median of 3 fresh loads (`--loads <n>`): an init script counts the 512x512 canvases made between `boot:worldgen-start` and `boot:scene-ready` (the four facade maps); the generator's canvas work timed in the page from a fixture copied from `TextureGenerator.createBuildingTextures` at fcaa649 (its `Math.random` replaced by a local LCG); saving = fixture x (facades present ? 1 : 0), so a build without the function reads 0, not "missing"; `world_gen` from the page's own measure, for perf-gate's `--ab`. No hook (the C7 contract) | 4 facade canvases (61 canvases in world gen); fixture 51.5 ms at 4x (the audit 41.9 ms; a busy host); world_gen 8.8 s at 4x. Exits 1 | 4 (57 in world gen); fixture 52.3 ms; world_gen 9.1 s at 4x (provisional: four builders on the machine). Exits 1 |
+| `webp-edge` | DA-17; C11 | desktop, the Projects panel open (`showZonePanel({id:'projects'})`): every image it shows, drawn to a canvas in the page, its last 10 columns relative to `naturalWidth` (C11 re-exports chocomate.webp at 808 px); a column is light when the median over its rows of min(R, G, B) is over 150. Only shown images are judged; rankpilot.webp is sampled and reported. rankpilot.webp, og-cover.jpg and og-cover-v2.jpg fetched: each must be 200 | chocomate.webp shown at 428x150 (cover), 820 px wide, columns 810-819 light (the audit's columns exactly); rankpilot.webp 810-819; all three files 200. Exits 1 | the same. Exits 1 |
+| `fonts` | DA-06; D12 | desktop and phone, after `document.fonts.ready`: CDP `CSS.getPlatformFontsForNode` on every element with its own text in the welcome card, the Hiring pill and the Portfolio menu's items (no Arial; a node whose computed family names 'Bebas Neue Fallback' is exempt). 'Bebas Neue' and 'Patrick Hand' count as loaded only when `document.fonts.check()` is true and a FontFace of exactly that family is 'loaded' (`check()` is vacuously true with no face). Patrick Hand is read after the first bubble (`showNpcSpeechBubble`); since the canvas's own use loads the face on every build, a second row judges the paint: the bubble's last `fillText` in Patrick Hand ran with the face loaded. The host of each woff2, and layout shifts in the 2 s after each face loads | every welcome-card button and every menu item in Arial (the title and body in Segoe UI, as the audit found); both faces load from fonts.gstatic.com; the bubble painted before Patrick Hand loaded and never again; CLS 0. Exits 1 | the same Arial rows (the Hiring pill in Segoe UI Semibold); both faces from fonts.gstatic.com; the bubble paints with the face loaded (B8); CLS 0. Exits 1 |
+| `loader` | DA-10; D12 | desktop and phone. Every `*.woff2` and the fonts.googleapis.com CSS held back, and separately `/assets/main-*.js`, through `openSession`'s `onRoute`, then released in turn. Static run: the static loader's title in the FOUT frame, the faces released, the same title loaded, the bundle released, the JS loader with the faces in. JS run: the bundle first, the JS loader's title in the FOUT frame (its loaded frame is the static run's: once world gen starts the page answers nothing until the loader has gone). Title width is the text's own box (a Range). The phase diff: the share of viewport pixels (sum \|dRGB\| > 48) differing between the static and JS loaders with the faces in, outside `#ld-bar`'s track, `#ld-pct`, `#ld-msg` and `#load-phase`. Screenshots through CDP `Page.captureScreenshot` (`page.screenshot()` waits for web fonts, so it never sees the FOUT frame) | static title 778 px in Arial bold against 471 px in Bebas (1.65; the audit's 775/470 exactly), phone 368/289 (1.27); JS title 384/262 (1.47), phone 375/256; phase diff 2.67% desktop, 9.1% phone. Exits 1 | the same widths; phase diff 2.7% and 9.17%. Exits 1 |
+| `bundles` | PERF-12 | static, Node only (no browser; the leak and port rows do not apply): every chunk under `<dist>/assets`, raw, gzip-9 and brotli-11 (`zlib.brotliCompressSync`, quality 11); the main chunk's gzip also through perf-gate's exported `bundleSize` (level 6, within 1%); the Projects panel's '~280 KB app + 175 KB three.js (brotli)' read from the built main chunk against the measured brotli, within 5%, report only. `--compare <dist>` sizes a second build | main-FxtHGAB1.js 907.73 / 279.54 / 224.75 kB, three 657.05 / 168.78 / 138.41 kB (this local build of 58c8849; the audit's main-BT05EkBU.js read 886 / 273 / 219): the quote matches gzip, not brotli. Exits 0 | main-Dh-edStu.js 1,123.45 / 350.32 / 280.20 kB (perf-gate: 351.48 gzip), three 657.12 / 168.81 / 138.48 kB; '~280 KB app' now matches brotli by growth, '175 KB three.js' does not (138.5). 10 chunks, 757.48 kB gzip in all. Exits 0 |
+| `mobile` (plateau rows) | B3 | the phone, trusted CDP touches: the stick held at 0.15 and 0.7 of its own radius (the ring's half-width, found from the 166 px hit square as today; 55 px on both builds) for 1.8 s: the speed. B3 wants 2.0 ±0.2 and 5.6 ±0.3 u/s | 5.6 and 5.6 u/s. 0.15 fails | 5.6 and 8.12 u/s (0.7 of the radius already runs, A11's touch run). Both fail |
+
+### Phase-2 probes, wave 4 (P2-E2d)
+
+In `p2/`, rebuilt from the gameplay and guidance audits' reports
+(`phase2-audit/results/gameplay.json` GP-03, GP-04, GP-08, GP-13 and
+`a.json` GD-09; `phase2-audit/gameplay/` and `guidance/work/` are empty).
+Race legs and the boat are flags on `p2/race`, not probes of their own.
+Every row reads a wave-4 feature optionally. Baselines as above; these are
+also P2-A9's in-repo before-numbers (the Vercel Web Analytics baseline does
+not exist).
+
+| Probe | Item | What it measures | 58c8849 | wave-3 main (fcaa649) |
+|---|---|---|---|---|
+| `p2/feed` | GP-13; P2-A10 | desktop at the spawn on the hub lawn (no cat in aim), the card dismissed, First steps skipped, every `ui.flashMessage` recorded; the persisted counts (`ds_bird_feed`, `ds_cat_feed`) seeded per session. 21 h, bird feed only: the flash (P2-A10: /roost/i) and the count (unchanged). 21 h with cat feed held: a cat throw (the cat count drops by 1). 12 h control: one spent and the ground birds within 2 u of where the pile landed, 6 s later | dayFactor 0 at 21 h: '🌾 Not here — try over open ground', 3 -> 3; with cat feed the same flash and no cat throw (2 -> 2); noon: 3 -> 2, 8 birds. Exits 1 | the same. Exits 1 |
+| `p2/landmarks` | GD-09; P2-A13 | desktop, the card dismissed, First steps skipped: for each `construction_${i}` (WORK_SITES order) the player stood 2.2 u out (the first of 8 headings that holds 1.8-2.6 u after a settle) and `[data-hud=prompt]` (else the interaction div) read every 100 ms for 1.2 s. P2-A13: the prompt names board i's name and status, from a fixture of `SignPainter.PROJECT_BOARDS` (`test/probeSafety` pins it to the table; owners.json lists the read); when it does, E opens Projects at `[data-project=<anchor>]` (rankpilot, chocomate, island, banos, insta) with the card's top inside the panel's scroll viewport, and `passport.count()` is unchanged (null when no prompt names a project) | 1 of 5 sites prompts: RankPilot's '🪑 A bench could go here — needs 4 🪵 + 10 🪙', the other four nothing (the audit exactly). Exits 1 | the same. Exits 1. The card locator checked on fcaa649's own anchor path (`showZonePanel({id:'projects'}, {source:'landmark', anchor})`): all five cards in view |
+| `p2/build` (export `build`; apart from `p2/building.cjs`) | GP-08; D6 | desktop, the card dismissed, First steps skipped, `ds_timber` 10 and `ds_coins` 30 seeded; the cheapest free structure plot (the build system: the scaffold and its 1.6 s minimum), stood 1.5 u from its seat, E, then the chooser's first `button[data-build-kind]`. The write is blocked, so the build refunds. From that click: the coins' return (every frame), every `ui.toast` call, when the refund text is on screen (the SAMPLER over `#ui-overlay`), and what showed between. D6's deferred row: the refund on screen within 0.5 s of the coins | signpost: coins back at 1.63 s, the refund on screen at 8.47 s (6.8 s late), behind the compass hint and the 'Coins!' hint (the audit's run: 2.7 s and 5.9 s behind the talk hint; the same bug). Exits 1 | coins back at 1.64 s, the refund at 1.77 s (131 ms): D6's row already holds on fcaa649. Exits 0 |
+| `p2/coinhunt` | GP-04; P2-A9 | desktop, a fresh visitor on the default world (`__dsSeedDraws` 80842), the card dismissed, First steps skipped, the frozen sim at 1/60 s: the arrival trail walked nearest-first, the total after it; then 3 simulated minutes (`--minutes`) aiming the chase camera at the nearest standing meadow coin with W held (a walk; `--run` adds the run key), re-aimed every 0.25 s, a coin not reached in 12 s skipped: coins per minute. Also the meadow coins within 30 u of the spawn. P2-A9's in-repo before-number | 17.7/min at a walk (the audit's live hunter: 13/min; this steering is perfect and frame-exact), 2 of 80 meadow coins within 30 u (the audit exactly), 5 coins after the trail. Exits 0 | 17.0/min at a walk (20.0 with `--run`, Shift), 2 of 80, 5 after the trail. Exits 0 |
+| `p2/race --legs` | GP-03; P2-A8 | desktop: every consecutive ring spacing on both circuits (ring i to i+1, the last back to the finish), great-circle u, against the chase camera's horizon on foot, sqrt(2 R h) with h the camera's height over the player's feet. Reported | land 5 legs of 115.5 u, water 6 of 103.9 u, horizon 16.5 u (h 1.37 u): every leg over it (the audit exactly). Exits 0 | the same. Exits 0 |
+| `p2/race --circuit water --craft boat` | GP-03; P2-A8 | desktop: the boat parked nearest the water start, boarded where it lies, then the gates driver (steering by the rings' own positions) for 49 s, backing out after 4 s aground. A beaching: the throttle held, the bow (1.5 u ahead) over land and the hull stopped, counted again only after 0.5 s afloat. Checkpoints passed after the start ring | 0 of 5 checkpoints (the audit exactly), 1 beaching: this driver grinds along the cove's shore instead of re-beaching (the audit's driver: 9). Exits 1 | 2 of 5 checkpoints, 3 beachings in this run (the count follows the steer; provisional). Exits 1 |
+
+The in-repo economy baseline at fcaa649 (`deploy-w3/dist`, 2026-11-14,
+`?hour=12`, desktop), P2-A9's before-numbers in place of the Vercel export:
+`p2/tour` 6 coins after the four districts (the trail's 5 and one meadow
+coin; 2 min, 4 stamps, 1 secret); `p2/quests` six School presses pay +60;
+`p2/coinhunt` 5 coins after the trail, then 17.0 coins a minute at a walk
+(20.0 running), 2 of 80 meadow coins within 30 u of the spawn;
+`p2/shop` 0 of 10 hats enabled with the trail's 5 coins (the cap costs 8);
+`p2/gather` a delivery hop pays 0.
+
+### Probe fixes and rows from the wave-4 amendments
+
+The carry-over lines of `wave4-amendments.md` (E). Baselines 2026-11-14 on
+wave-3 main (`deploy-w3/dist`, fcaa649) at `?hour=12` (the probe's own hours
+where it names them), ports 5191-5196, 0 leaks, other builders on the
+machine: counts hold, milliseconds are provisional. A row that reads a hook
+a later item adds is null, not fail, on fcaa649; a row that measures
+behaviour main already has is judged, and its fcaa649 value is the
+before-number the item moves.
+
+| Probe | Line | What changed | wave-3 main (fcaa649) |
+|---|---|---|---|
+| `camera` (tour), `fm` (d-tour) | camera.cjs tour | `lib.openWelcomeDisclosure` (moved from fm.cjs) opens D9's 'More ways to explore' before `button[data-tour]` is clicked; the tour rows are inconclusive (exit 3) when the button's rect is empty or the recorder never sees a turn over 0.05° | disclosure opened; 652 frames, first 0.1°, largest 15.01°/frame at 7858 ms, 23 frames over 2°: MOT-06 fails for real (w3-unhold: 9.21°, 25 frames, 7756 ms; wave-2 main 9.42°, 34 frames, a 9.42° first frame). fm d-tour 43.7 s |
+| `p2/bobber` | p2/bobber | the '!' row is one row per hour, null on a missed bite, no free shore spot or a stalled hour; a hard budget of 60 s a cast, 45 s an hour and 150 s for the spot search (`--cast-ms` shortens them), after which the session is closed | 7 of 8 clear and the sprite at 12, 18 and 21 h on desktop and phone (8 of 8 on a second desktop run). `--cast-ms 1500`: stalled at cast 0, every row null, exit 3 |
+| `guide --part night` | guide night-check | none: verified at fcaa649 with `--night-hour 21,23,2,6`, twice | 8 of 8 both runs (the Night Watch at 10-25.3 u, then 2.4-22.4 u). Closed |
+| perf gate | bundle | `BUNDLE.main` rebased to fcaa649 (1,123.45 kB raw / 351.48 kB gzip); `wave2` kept; `budgetBase` stays wave-1 8662b27, so waves 1-3 used 39.63 kB and wave 4 has about 10.4 kB gzip; `nextCandidate.how` names the wave-4 contract (D drops the value import, A dynamic-imports Chat) | this branch's main chunk is byte-identical to fcaa649: delta 0 |
+| perf gate | rows list | `FX_LEDGER.coinGlint` (20 µs desktop, 0 on the low tier) and `FX_BARS.coinGlint` (one program); `canopySway` landed with E6d | `--fx coinGlint` reads n/a (no such effect) |
+| `p2/quests` | rows list (P2-A9) | the School row is "pay exactly +10 on a fresh visitor" (was "<= 10"), with per-press deltas and the coins on arrival; enrolment pays move on the first press then nothing, and the first cast after enrolment pays +10 (both null without `ds_school_enrolled`) | +60 (10 a press): fail; the enrolment and cast rows null |
+| `p2/tour` | rows list (P2-A9) | coins after the four districts judged >= 25 (was report-only, mislabelled P2-A10) | 6: fail |
+| `p2/shop` | rows list (P2-A9, P2-A14) | a hat enabled on the first kiosk visit with the trail's 5 coins; after an equip at 1440x900, dot(camera, avatar forward) < -0.3 and the avatar's projected box centre outside the shop (null without `OrbitCamera.setMirrorPose`) | 0 of 10 hats: fail. Mirror rows null (dot -1, centre outside on D7's dock) |
+| `p2/gather` | rows list (P2-A9) | the delivery hop's coin delta, judged +3 | 0: fail |
+| `p2/survey` | rows list (P2-A11) | exhibit cap height at the back, left and right poses in the five halls (18 px desktop, 11 phone); the hire card from Professional and Contact in 2 actions (stand in the hotspot whose arg is 'hire', E; `hire_cta {cta:'interior'}` seen through a `window.va` stub, nothing sent); a project card in Projects and the compass in Welcome in 2 actions; J held 1 s indoors turns 60° or more | caps min 19.3 px over 15: pass. Professional and Contact open the zone panel, no hire_cta: fail. Projects opens at a card in view: pass. The Welcome map sets no compass: fail. J turns 0° in all four halls: fail |
+| `camera --part mirror` | rows list (P2-A14) | equip a hat at the kiosk: frames over 1.5 s with the camera inside a mesh near the player (prop boxes within 6 u, the avatar as a 0.3 u capsule), and the avatar's share of the frame at Customise over 3% | 0 of 119 frames inside; Customise 4%: both pass (no mirror pose yet) |
+| `intro` | rows list (D11) | the coin chip's layout width through a count-up 11 to 18 (within 0.5 px; null without a count-up); a synthetic ds:coin's flight ends inside the chip (null when nothing flies; `--selftest-flight` proves the row); with `--reduced-motion`, the menu and a panel ramp in 80-200 ms, opacity only | widths 62/63 px: fail. No flight: null (the self-test's flight ends on the chip at 623 ms). Reduced motion: full opacity on the first frame, 0 ms: fail |
+| `census` (`--compare`) | rows list (C7) | every unique texture the scene's materials hold, CanvasTextures and 512x512 canvases apart, with an estimated GPU size (w x h x 4 x 4/3); the C7 row wants -1 CanvasTexture and about -1.3 MiB: the GPU holds only the facade albedo, because `Materials.toonify` keeps only `map` (the normal, AO and roughness canvases are made, as texgen counts, and never uploaded) | 67 textures, 65 CanvasTextures, one 512x512, 22.44 MiB of canvases; against itself delta 0: null |
+| `showthrough` (new, in phone.cjs) | rows list (D16) | at 390x844 and 844x390: the minimap or compass showing through the Portfolio menu, the hire card and Projects (the overlap, inset by the card's corner radius, shot with the element shown, hidden and shown again: through when hiding it changes 1% more pixels, at 4 levels, than the scene's own motion); the minimap label cap height from its own `fillText` calls, >= 7 px. `--selftest-through` makes the cards half transparent | phone: the minimap through the menu (78.7% against 0.1% noise), not through the hire card or Projects; landscape: the compass through the menu (81.8%); label caps 6.3 px (phone), 5.4-6.7 px (landscape). Exit 1 |
+| `mobile` | rows list (D15) | the vibrate log judged from the pulses each action adds: the stick's engage 10 ms, a HUD button (JUMP) 12 ms, a USE tap at a cottage door 18 ms (null when no door prompt is in reach) | engage 5, JUMP 8, the door 8: all fail |
+| `loco` (wave) | rows list (B6) | the hand is armR's hand vertices (rig.cjs's marker), not `getHandAnchor()` (the armR bone: the shoulder pivot, which does not move in a wave, so the old curve read a flat 0.42 u); 10 crops at 100 ms steps across 150-1050 ms, judged from an in-page per-frame sample: the hand inside the 320 px crop around the head and not hidden by the head bone's disc; 8 of 10 | the curve -0.13 to 0.92 u (the audit's -0.12 to 0.91); 9 of 10 crops (hidden behind the head at 1050 ms): the crop row already passes from the chase camera, so B6's curve (dip, overshoot) carries its acceptance |
+| `events --part coin` | rows list (B9) | walk onto one meadow coin on the frozen sim, step 1 s more: exactly one ds:coin per coin gained, values summing to the gain, with x, y and value 1 (null without ds:coin); `--selftest-coin once\|twice` | collected at frame 31, no ds:coin: null. Self-test once: pass; twice: fail |
+
+Re-recorded at fcaa649 for the items that own them (the re-record-only line):
+- `p2/quests` (A, P2-A9): six School presses +60, 10 a press.
+- `loco` (B4): landing soles 0.077-0.078 u over the ground, the squash minimum 5-9 frames after touchdown (two runs); both fail.
+- `npc` (B, wave 5's B7): bob 1 cycle per leg cycle, roll 0.5, the walk-start leg pop 19.4°, soles while walking 0.020-0.114 u, sitting soles -0.121 u (kneeling 0.02 u passes); talk arms 42.8°, first gesture 325 ms, the B8 lean +4.0.
+- `mobile` (D15): |v| 1.00 at touchdown at all 5 rim points; the thumb's transition 0s; the stick at 0.15 and 0.7 of its radius 5.6 and 8.12 u/s.
+- `p2/daycycle` (C; P2-C1, C1), desktop, hub and the four districts at 6, 9, 10.5, 12 and 15 h: the worst district ground against the hub -8.0 L\* at Professional 15 h (50.8 against 58.8; bar -5), the lowest ground at 6 h 38.2 at Projects (bar 40): both still miss; sun elevation 45° or more and shadow strength 1 at every district; sky to ground 2.84:1 at 6 h.
+- `camera` tour (A, MOT-06): 15.01°/frame, 23 frames over 2° (the fixed tour part, above).
+
+The startup world_gen line is the integration's run (`perf:gate -- --ab`,
+alone after five quiet minutes): report `texgen`'s saving (its fixture cost
+x the facade canvases present, 4 on fcaa649, about 52 ms at 4x on a busy
+host here) beside `world_gen`.
+
 ### Probe fixes from the wave-2 integration
 
 The wave-2 integration read probe defects as product faults. Each was checked
@@ -699,6 +796,7 @@ Budgets (`THRESHOLDS`, from plan-r3 › perfBudget), as B − A:
 | low tier (1x) | CPU p95 +0.75 ms; draws spawn +20, hub-wide +30, Projects +25, vehicle +25, room no more than main; programs +3; scene nodes +150; textures +6 MB; +50 KB before the card. The first door: its longest frame 200 ms or less, 3 programs or fewer |
 | startup (4x) | welcome_visible +400 ms; world_gen +200 ms; long tasks main + 2, the longest task +50 ms; +50 KB before the card |
 | FxBudget (`FX_US`) | per effect 150 µs a frame on desktop and 80 on the low tier; all effects 600 and 300. An effect in plan-r3's ledger (`FX_LEDGER`) is held to its ledger value where that is lower, in `--fx` and in the CPU proxy |
+| Per-effect bars (`FX_BARS`, wave 4) | `--fx <name>` holds an effect with its own plan-r3 bars to them instead of the tier's: `canopySway` (C9) GPU p50 +0.3 ms or less and 0 programs added, ledger 0 µs. A build that never registers the effect reads `n/a` (exit 3), not a verdict: fcaa649 reads n/a |
 
 CPU p50 and triangles have no budget and are reported.
 
@@ -1147,6 +1245,17 @@ resolves.
   `duskflip.cjs`, `journey.cjs`, and the `room-lib.cjs`, `L.cjs`,
   `play-lib.cjs` and `guide-lib.cjs` libraries.
 - Stage 2, wave 2: `intro.cjs`, `camera.cjs`, `lum.cjs`.
+- Stage 2, wave 4 (E6d): `slide.cjs`, `swim.cjs`, `env.cjs`, `texgen.cjs`,
+  `webp-edge.cjs`, `fonts.cjs`, `loader.cjs`, `bundles.cjs` (static, Node
+  only), and `mobile.cjs`'s plateau rows.
+- Phase 2, wave 4 (P2-E2d), in `p2/`: `feed.cjs`, `landmarks.cjs` (its
+  `PROJECT_BOARDS` fixture pinned by `test/probeSafety`), `build.cjs`,
+  `coinhunt.cjs`, and `play.cjs`'s `p2/race --legs` and `--craft boat`.
+- Wave-4 amendments: `phone.cjs`'s `showthrough` (D16), `lib.cjs`'s
+  `openWelcomeDisclosure`, and new rows in `camera.cjs` (`--part mirror`),
+  `intro.cjs`, `census.cjs`, `mobile.cjs`, `loco.cjs`, `events.cjs`
+  (`--part coin`), `p2/loops.cjs` (bobber, shop, tour, gather; its
+  `fishKit` export), `p2/play.cjs` (quests) and `p2/survey.cjs`.
 - Phase 2, wave 2, in `p2/`: `light.cjs` (daycycle, weather, beacons,
   shadowdraws, edge-crawl), `rooms.cjs` (room-a11y, room-phone, room-light,
   room-rig, avlum, warmtest, room-census), `guidance.cjs` (recruiter, npcs,
