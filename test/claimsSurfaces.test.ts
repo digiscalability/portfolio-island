@@ -637,3 +637,19 @@ describe('vercel.json keeps the public routes', () => {
     });
   });
 });
+
+describe('the Privacy links leave the app in a new tab (CO-D4)', () => {
+  // A same-tab link pushes the page off the history stack while PanelManager's
+  // pushed entry outlives it, so Back from privacy.html returned to a stale
+  // panel entry. Each in-app Privacy link opens a new tab instead, at the
+  // 12 px floor.
+  test.each(['SimpleUI.ts', 'ReceptionDesk.ts'])('%s', (f) => {
+    const links = src(f).match(/<a href="\/privacy\.html"[^>]*>/g) ?? [];
+    expect(links.length).toBeGreaterThan(0);
+    for (const a of links) {
+      expect(a).toContain('target="_blank"');
+      expect(a).toContain('rel="noopener"');
+    }
+    expect(src(f)).not.toMatch(/font-size:11px;[^"]*">[^<]*<a href="\/privacy\.html"/);
+  });
+});

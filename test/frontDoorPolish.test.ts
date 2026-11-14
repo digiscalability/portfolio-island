@@ -134,6 +134,25 @@ describe('the loader has a way out', () => {
     expect(title?.getAttribute('style')).toContain('font-size:min(48px,12vw)');
   });
 
+  // Round 3 play: the welcome card broke its title as 'DIGISCALABILITY LIFE /
+  // ISLAND' at 1440x900 and 390x844, while the loader before it read
+  // 'DIGISCALABILITY / LIFE ISLAND', so the handover jumped. Both titles keep
+  // 'Life Island' on one line; the text itself is unchanged.
+  test('the loader and the welcome card break the title before LIFE ISLAND', () => {
+    ui.showLoading(10);
+    const loader = [...document.querySelectorAll<HTMLElement>('#ui-overlay div')].find(
+      (d) => text(d) === 'DIGISCALABILITY LIFE ISLAND',
+    )!;
+    const keep = (el: Element): HTMLElement | undefined =>
+      [...el.querySelectorAll<HTMLElement>('span')].find((s) => s.style.whiteSpace === 'nowrap');
+    expect(text(keep(loader))).toBe('LIFE ISLAND');
+    ui.hideLoading();
+    ui.showWelcome(null);
+    const h1 = document.querySelector('[role="dialog"] h1')!;
+    expect(h1.textContent).toBe('DigiScalability Life Island');
+    expect(text(keep(h1))).toBe('Life Island');
+  });
+
   test('the pitch line reads like index.html’s static loader, count from the roster', () => {
     // index.html shows the same line before the bundle runs; keep the two in step.
     ui.showLoading(10);
@@ -390,6 +409,22 @@ describe('messages: one at a time', () => {
     vi.advanceTimersByTime(800);
     expect(text(toastEl())).toBe('🪙 Coins! The 📔 Journal lists every way to earn.');
     card.remove();
+  });
+
+  // Round 3 play: on a 390x844 phone the first coin's pop (B9: up 1.75 u
+  // over the head, gone by 450 ms, sparkles by 500) landed at y 615-770,
+  // and the coin tip it triggers sat over its lower half. The pickup's
+  // ds:coin comes first, in the same task; the message waits out the pop.
+  test('a message waits out the coin pop that set it off', () => {
+    vi.useFakeTimers();
+    window.dispatchEvent(new CustomEvent('ds:coin', { detail: { x: 195, y: 690, value: 1 } }));
+    ui.toast('🪙 Coins! The 📔 Journal lists every way to earn.', { hint: true });
+    expect(toastEl()?.style.opacity ?? '0').toBe('0'); // the pop is on screen
+    vi.advanceTimersByTime(500);
+    expect(toastEl()?.style.opacity ?? '0').toBe('0'); // sparkles still falling
+    vi.advanceTimersByTime(200);
+    expect(text(toastEl())).toBe('🪙 Coins! The 📔 Journal lists every way to earn.');
+    expect(toastEl()!.style.opacity).toBe('1');
   });
 
   test('the first-run compass hint stands down once First steps arms', () => {

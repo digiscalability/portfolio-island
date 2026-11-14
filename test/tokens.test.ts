@@ -57,7 +57,10 @@ describe('ui/tokens.ts and style.css agree', () => {
 
   test('and style.css declares no --ds-* property the tokens do not have', () => {
     const names = new Set((Object.keys(DS) as DsToken[]).map(cssVarName));
-    expect([...declared.keys()].filter((n) => !names.has(n))).toEqual([]);
+    // The motion tokens (--ds-dur-*, --ds-ease-*) are ui/motion.ts's, kept in
+    // step by motionRules.test.
+    const motion = /^--ds-(dur|ease)-/;
+    expect([...declared.keys()].filter((n) => !names.has(n) && !motion.test(n))).toEqual([]);
   });
 
   test('they live on :root, beside (not inside) the legacy --primary block', () => {
@@ -80,13 +83,27 @@ describe('the pairings the tokens promise pass AA', () => {
     for (const c of s) expect(ratio(WHITE, hex(c)), c).toBeGreaterThanOrEqual(5.38); // 5.387, 6.15
   });
 
-  test('a hovered (8% darker) or pressed (15% darker) fill only gains contrast', () => {
+  // A CSS filter darkens the whole element, label included: brightness(k)
+  // multiplies the white label and the fill alike, so the pair is judged
+  // after both are scaled. brightness(0.7) would put the primary at 4.21:1.
+  const brightness = (f: string): number => Number(/^brightness\(([\d.]+)\)$/.exec(f)![1]);
+  const labelHolds = (filter: string): boolean => {
+    const k = brightness(filter);
+    const dim = (c: RGB): RGB => c.map((v) => v * k) as RGB;
+    return [...stops(DS.primary), ...stops(DS.ctaWork)].every(
+      (c) => ratio(dim(WHITE), dim(hex(c))) >= 4.5,
+    );
+  };
+
+  test('a hovered or pressed fill dims its white label with it and stays at 4.5:1 or more', () => {
     expect(DS.hoverFilter).toBe('brightness(0.92)');
     expect(DS.pressFilter).toBe('brightness(0.85)');
-    for (const c of [...stops(DS.primary), ...stops(DS.ctaWork)]) {
-      const pressed = hex(c).map((v) => v * 0.85) as RGB;
-      expect(ratio(WHITE, pressed)).toBeGreaterThan(ratio(WHITE, hex(c)));
-    }
+    expect(labelHolds(DS.hoverFilter)).toBe(true);
+    expect(labelHolds(DS.pressFilter)).toBe(true);
+  });
+
+  test('the check bites: a brightness(0.7) press filter fails it', () => {
+    expect(labelHolds('brightness(0.7)')).toBe(false);
   });
 
   test('the ruled identity: indigo/violet primary, green only for Work with me', () => {

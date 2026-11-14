@@ -1,7 +1,6 @@
 import { a11y } from './Accessibility';
 import { linkLabel, markReachedPortfolio, track, trackOnce } from './Analytics';
 import type { BoardRead } from './Boards';
-import { VOICE_MAX_MS } from './Chat';
 import { DISTRICTS } from './Districts';
 import { GUIDE_KEY, GUIDE_STEPS, type GoalsSummary, type GuideStep } from './Guide';
 import { checkName, safePeerName } from './Moderation';
@@ -29,6 +28,7 @@ import {
   DISTRICT_GLYPHS,
 } from './ui/icons';
 import { type InputMode, keyTextPlain, promptKeysHtml, renderKeyText } from './ui/keycaps';
+import { mapUV } from './ui/mapProjection';
 import { DS } from './ui/tokens';
 import { WORLD_ERA } from './WorldScale';
 import { EVENT_META } from './WorldState';
@@ -61,15 +61,36 @@ export function hapticsEnabled(): boolean {
  * Tiny haptic tap for touch feedback (Android; iOS ignores vibrate — a
  * harmless no-op). Off when the Haptics setting is (see hapticsEnabled).
  * Exported so game events elsewhere (landings, race checkpoints, coins) can
- * adopt it too.
+ * adopt it too. The vocabulary (D15, HAPTIC-01): stick engage 10 ms, a
+ * button press 12 ms, the stick reaching its run colour 10 ms, an
+ * interaction that worked (a door, a talk) 18 ms, and [12, 40, 12] when the
+ * shop refuses a purchase.
  */
-export function hapticPulse(ms: number): void {
+export function hapticPulse(ms: number | number[]): void {
   if (!hapticsEnabled()) return;
   try {
     navigator.vibrate?.(ms);
   } catch {
     /* unsupported or blocked by permissions policy */
   }
+}
+
+/**
+ * The compass pill's narrow-screen label (D16). Under 480 px the pill keeps
+ * the destination's icon (a first token with no letter or digit) plus a
+ * short name: the first word after the icon, skipping a leading article, cut
+ * at 9 characters. A race counter stays whole ('Ring 3/7'), so 'Finish line'
+ * reads 'Finish'. iconOnly (under 340 px) keeps just the icon, or the short
+ * name when the label has no icon.
+ */
+export function compassShortLabel(label: string, iconOnly = false): string {
+  const words = label.trim().split(/\s+/).filter(Boolean);
+  const icon = words.length && !/[\p{L}\p{N}]/u.test(words[0]) ? words.shift()! : '';
+  if (words.length > 1 && /^(the|a|an)$/i.test(words[0])) words.shift();
+  let name = (words[0] ?? '').slice(0, 9);
+  if (name && /^\d+\/\d+$/.test(words[1] ?? '')) name = `${name} ${words[1]}`;
+  if (iconOnly && icon) return icon;
+  return [icon, name].filter(Boolean).join(' ');
 }
 
 /**
@@ -137,7 +158,7 @@ export interface JournalData {
  * font sizes, which is exactly how it drifted into the screenshotted mess.
  * Height is FIXED (30px + 38px row pitch = 8px gutters) so the column reads
  * as one designed unit; fontFamily is deliberately absent — the overlay's
- * Inter cascades (see createOverlay).
+ * system UI stack cascades (see createOverlay).
  */
 const CHIP: Partial<CSSStyleDeclaration> = {
   position: 'absolute',
@@ -222,6 +243,11 @@ const PLACE_MOVE = 0.15;
  *  clocks read Date.now(), which the suites' fake timers move along with
  *  the timers; performance.now() they leave alone. */
 const PANEL_ACTION_MS = 8000;
+
+/** The longest voice clip, Chat.ts's VOICE_MAX_MS. Kept local so SimpleUI
+ *  imports nothing from Chat.ts as a value and A can load Chat with
+ *  import() (wave 4); uiLocks pins the two equal. */
+const VOICE_MAX_MS = 8000;
 
 export class SimpleUI {
   private overlay: HTMLElement;
@@ -322,21 +348,40 @@ export class SimpleUI {
     return this.fadeDiv;
   }
 
+  /** The door fade's pending timers; dispose() clears them. */
+  private fadeTimers = new Set<number>();
+  /** dispose() ran: a door still fading stops where it is. */
+  private fadeStopped = false;
+
   /** Fade to black, run midCb at the peak, fade back in — for door transitions. */
   fadeThrough(midCb: () => void): void {
+    if (this.fadeStopped) return;
+    hapticPulse(18); // D15: an interaction that worked (a door)
     const d = this.ensureFadeDiv();
     d.style.pointerEvents = 'auto';
     d.style.opacity = '1';
-    window.setTimeout(() => {
+    // Round 3: these timers ran on after a test file's window was torn down
+    // and called requestAnimationFrame on a dead global. They are tracked,
+    // dispose() clears them, and the rAF is guarded for any that slip by.
+    const later = (fn: () => void, ms: number): void => {
+      const t = window.setTimeout(() => {
+        this.fadeTimers.delete(t);
+        if (!this.fadeStopped) fn();
+      }, ms);
+      this.fadeTimers.add(t);
+    };
+    later(() => {
       try {
         midCb();
       } catch {
         /* keep the fade sane even if the swap throws */
       }
-      requestAnimationFrame(() => {
+      const show = (): void => {
         d.style.opacity = '0';
-      });
-      window.setTimeout(() => {
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(show);
+      else show();
+      later(() => {
         d.style.pointerEvents = 'none';
       }, 520);
     }, 470);
@@ -403,7 +448,7 @@ export class SimpleUI {
       color: 'white',
       padding: '20px',
       textAlign: 'center',
-      fontSize: '14.5px',
+      fontSize: '15px',
       width: 'min(500px, calc(100vw - 24px))',
       boxSizing: 'border-box',
     });
@@ -625,7 +670,9 @@ export class SimpleUI {
       zIndex: '1000',
       // Match the site's own stack (style.css) — the old 'Arial' here
       // overrode it for every HUD child and read dated next to system-ui.
-      fontFamily: "Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif",
+      // D12: the system UI stack (index.html's --font-ui); Inter is dropped.
+      fontFamily:
+        "var(--font-ui, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif)",
     });
     // Safe-area insets published as inheriting custom properties so every
     // edge-anchored HUD child can offset itself off notches / home
@@ -1118,7 +1165,7 @@ export class SimpleUI {
       justifyContent: 'center',
       background: 'rgba(0, 0, 0, 0.55)',
       borderRadius: '10px',
-      fontSize: '18px',
+      fontSize: '17px',
       color: '#fff',
       cursor: 'pointer',
       pointerEvents: 'auto',
@@ -1319,11 +1366,11 @@ export class SimpleUI {
     const modal = this.buildCenteredModal('min(92vw, 520px)', 'island-map');
     const title = document.createElement('h2');
     title.textContent = '🗺️ Island map';
-    Object.assign(title.style, { margin: '0 0 8px', color: '#8a9bff', fontSize: '18px' });
+    Object.assign(title.style, { margin: '0 0 8px', color: '#8a9bff', fontSize: '17px' });
     modal.appendChild(title);
     const hint = document.createElement('p');
     hint.textContent = 'Tap anything to set your compass to it.';
-    Object.assign(hint.style, { margin: '0 0 10px', fontSize: '12.5px', color: '#aab' });
+    Object.assign(hint.style, { margin: '0 0 10px', fontSize: '13px', color: '#aab' });
     modal.appendChild(hint);
 
     // Height-aware: width-only sizing produced a 430px disc on a 375px-tall
@@ -1335,18 +1382,45 @@ export class SimpleUI {
       Math.floor(window.innerHeight * 0.62),
     );
     const dpr = Math.min(window.devicePixelRatio || 1, 2); // the minimap DPR lesson
+    const R = D / 2 - 6;
+    // D18: a fixed D x D box. The vector map (ui/islandMap.ts, its own chunk)
+    // slots in under the canvas when it loads, with no layout shift; until
+    // then the box's own disc stands in for sea and land.
+    const mapBox = document.createElement('div');
+    mapBox.dataset.islandMap = '1';
+    Object.assign(mapBox.style, {
+      position: 'relative',
+      width: `${D}px`,
+      height: `${D}px`,
+      margin: '0 auto',
+      borderRadius: '50%',
+      background: `radial-gradient(circle closest-side, #4d8a46 ${R * 0.94}px, #17435e ${R * 0.94}px, #17435e ${R}px, transparent ${R}px)`,
+    });
     const canvas = document.createElement('canvas');
     canvas.width = D * dpr;
     canvas.height = D * dpr;
+    canvas.setAttribute('aria-hidden', 'true'); // the legend is the accessible map
     Object.assign(canvas.style, {
+      position: 'relative',
       width: `${D}px`,
       height: `${D}px`,
       borderRadius: '50%',
       cursor: 'pointer',
       display: 'block',
-      margin: '0 auto',
     });
-    modal.appendChild(canvas);
+    mapBox.appendChild(canvas);
+    modal.appendChild(mapBox);
+    void import('./ui/islandMap')
+      .then(({ islandMapSvg }) => {
+        const art = document.createElement('div');
+        art.setAttribute('aria-hidden', 'true');
+        Object.assign(art.style, { position: 'absolute', inset: '6px', pointerEvents: 'none' });
+        art.innerHTML = islandMapSvg();
+        mapBox.insertBefore(art, canvas);
+      })
+      .catch(() => {
+        /* offline or blocked: the stand-in disc stays */
+      });
     const ctx = canvas.getContext('2d');
     const hits: Array<{ x: number; y: number; poi: (typeof pois)[number] }> = [];
     // The parcel and Contact's mail never share a glyph (P2-D8).
@@ -1363,31 +1437,13 @@ export class SimpleUI {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       const cx = D / 2;
       const cy = D / 2;
-      const R = D / 2 - 6;
-      // Polar projection from the pole: r grows with distance from the pole
-      // (lat π/2 = centre, shore lat ~0.24 = rim).
-      const SHORE_LAT = 0.2;
+      // Polar projection from the pole (ui/mapProjection.ts, shared with the
+      // vector map under this canvas): lat pi/2 = centre, shore lat 0.2 = rim.
+      // The canvas is the marker layer only; sea, land and roads are the SVG's.
       const project = (pos: { x: number; y: number; z: number }): { x: number; y: number } => {
-        const len = Math.hypot(pos.x, pos.y, pos.z) || 1;
-        const lat = Math.asin(Math.max(-1, Math.min(1, pos.y / len)));
-        const lon = Math.atan2(pos.z, pos.x);
-        const r = (R * (Math.PI / 2 - lat)) / (Math.PI / 2 - SHORE_LAT);
-        return { x: cx + Math.cos(lon) * Math.min(r, R), y: cy + Math.sin(lon) * Math.min(r, R) };
+        const { u, v } = mapUV(pos);
+        return { x: cx + u * R, y: cy + v * R };
       };
-      // Sea, land, plaza ring.
-      ctx.fillStyle = '#17435e';
-      ctx.beginPath();
-      ctx.arc(cx, cy, R, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#4d8a46';
-      ctx.beginPath();
-      ctx.arc(cx, cy, R * 0.94, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(232, 217, 184, 0.5)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(cx, cy, (R * (Math.PI / 2 - 0.4636)) / (Math.PI / 2 - SHORE_LAT), 0, Math.PI * 2);
-      ctx.stroke();
       // POIs.
       ctx.font = '16px system-ui, sans-serif';
       ctx.textAlign = 'center';
@@ -1688,6 +1744,13 @@ export class SimpleUI {
    *  leaving a hall, 2.0 s after the passport toast). A hint taken down at
    *  once (stepHintAside) has no fade to wait for. */
   private toastFadeUntil = 0;
+  /** B9's pop and its sparkles, plus a frame's margin, ms. */
+  private static readonly COIN_POP_MS = 600;
+  /** A coin's pop is on screen until then (round 3 play): no message shows
+   *  over it. B9's pop rises 1.75 u over the head and is gone by 450 ms, its
+   *  sparkles by 500; on a 390x844 phone it landed at y 615-770, under the
+   *  bottom toast lane, and the coin tip it set off hid its lower half. */
+  private coinPopUntil = 0;
   /**
    * Brief auto-dismissing status toast — e.g. "Muted <name>".
    *
@@ -1978,7 +2041,7 @@ export class SimpleUI {
     // nor before the fly-in settles (a returning visitor read a special
     // before the card, FM-12), nor over a fading flash or toast — re-checked
     // on a short poll so deferred messages surface right after.
-    const fade = Math.max(this.flashFadeUntil, this.toastFadeUntil) - Date.now();
+    const fade = Math.max(this.flashFadeUntil, this.toastFadeUntil, this.coinPopUntil) - Date.now();
     const wait = this.isLoadingVisible() || this.isWelcomeVisible() || this.introHold() || fade > 0;
     const m = wait ? null : this.takeToast();
     if (m === null) {
@@ -2102,7 +2165,7 @@ export class SimpleUI {
           background: 'rgba(28,34,52,0.97)',
           border: '1px solid rgba(143,193,255,0.35)',
           color: '#fff',
-          fontSize: '13.5px',
+          fontSize: '14px',
           lineHeight: '1.35',
           textAlign: 'center',
           zIndex: '1',
@@ -2217,6 +2280,7 @@ export class SimpleUI {
     if (typeof window === 'undefined') return;
     window.addEventListener('ds:guide', this.onGuideEvent);
     window.addEventListener('ds:intro', this.onIntroEvent);
+    window.addEventListener('ds:coin', this.onCoinEvent);
     // The ladder and the visit's numbers (P2-D10), kept from boot: main-simple
     // publishes in the same task as it opens the crown's card.
     window.addEventListener('ds:goals', this.onGoalsEvent);
@@ -2252,8 +2316,13 @@ export class SimpleUI {
     if (phase === 'start' && this.introPhase === 'none') {
       this.introPhase = 'started';
       this.introStartedAt = Date.now();
+      // D11: the HUD waits out the intro and staggers in once it settles,
+      // or after 6 s if 'settled' never comes. No 'start', no hide.
+      this.panels.holdHud();
+      window.setTimeout(() => this.panels.releaseHud(), 6000);
     } else if (phase === 'settled') {
       this.introPhase = 'settled';
+      this.panels.releaseHud();
       // A tick later: afterIntro opens the welcome card right after it says
       // settled, and the card must win that race.
       this.schedulePump(0);
@@ -2314,10 +2383,12 @@ export class SimpleUI {
       });
       const label = document.createElement('div');
       label.textContent = 'The island today';
+      label.className = 'ds-caption';
       Object.assign(label.style, {
         fontSize: '11px',
         letterSpacing: '0.08em',
         textTransform: 'uppercase',
+        color: 'inherit',
         opacity: '0.6',
         marginBottom: '2px',
       });
@@ -2375,7 +2446,7 @@ export class SimpleUI {
       color: '#fff',
       padding: '11px 16px',
       borderRadius: '12px',
-      fontSize: '13.5px',
+      fontSize: '14px',
       lineHeight: '1.4',
       textAlign: 'center',
       fontFamily: 'system-ui, sans-serif',
@@ -2406,9 +2477,9 @@ export class SimpleUI {
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:5px;padding:14px 8px;
         border-radius:12px;border:2px ${done ? 'solid #12b76a' : 'dashed rgba(255,255,255,0.2)'};
         background:${done ? 'rgba(18,183,106,0.12)' : 'rgba(255,255,255,0.03)'};">
-        <span style="font-size:26px;filter:${done ? 'none' : 'grayscale(1)'};opacity:${done ? '1' : '0.5'};">${meta.icon}</span>
+        <span style="font-size:24px;filter:${done ? 'none' : 'grayscale(1)'};opacity:${done ? '1' : '0.5'};">${meta.icon}</span>
         <span style="font-size:12px;">${meta.label}</span>
-        <span style="font-size:11px;color:${done ? '#4ade80' : '#7d8ea6'};">${done ? '✓ Stamped' : 'Not yet'}</span>
+        <span style="font-size:12px;color:${done ? '#4ade80' : '#7d8ea6'};">${done ? '✓ Stamped' : 'Not yet'}</span>
       </div>`;
     }).join('');
     const complete = !!pp?.isComplete();
@@ -2436,7 +2507,7 @@ export class SimpleUI {
     modal.style.border = '1px solid rgba(255,213,74,0.55)';
     modal.insertAdjacentHTML(
       'beforeend',
-      `<div style="font-size:52px;line-height:1;">👑</div>
+      `<div style="font-size:48px;line-height:1;">👑</div>
        <h2 style="margin:10px 0 6px;color:#ffd54a;">Portfolio complete!</h2>
        <p style="margin:0 0 18px;font-size:15px;line-height:1.5;">
          You explored every zone of the island. The <strong>Founder's Golden Crown</strong>
@@ -2501,7 +2572,7 @@ export class SimpleUI {
     h.className = 'ds-caption';
     Object.assign(h.style, {
       margin: '0 0 8px',
-      fontSize: '11px',
+      fontSize: '12px',
       fontWeight: '700',
       letterSpacing: '0.08em',
       textTransform: 'uppercase',
@@ -2680,18 +2751,18 @@ export class SimpleUI {
           .map((e) => {
             const gain = e.amount > 0;
             const amt = `${gain ? '+' : '−'}${Math.abs(e.amount)} 🪙`;
-            return `<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 2px;border-top:1px solid rgba(255,255,255,0.08);font-size:13.5px;">
+            return `<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 2px;border-top:1px solid rgba(255,255,255,0.08);font-size:14px;">
               <span style="opacity:.9">${esc(e.label)}</span>
-              <span style="white-space:nowrap"><strong style="color:${gain ? '#7fe08a' : '#ff9a7a'}">${amt}</strong>
-                <span style="opacity:.5;font-size:11.5px;margin-left:8px">${ago(e.t)}</span></span>
+              <span style="white-space:nowrap"><strong style="color:${gain ? '#c9d4ff' : '#ff9a7a'}">${amt}</strong>
+                <span style="opacity:.5;font-size:12px;margin-left:8px">${ago(e.t)}</span></span>
             </div>`;
           })
           .join('')
       : '<div style="opacity:.6;font-size:13px;padding:14px 0">No coin activity yet — sell, race, or run an errand.</div>';
     const h = document.createElement('div');
-    h.innerHTML = `<div style="font-size:26px">📜</div>
+    h.innerHTML = `<div style="font-size:24px">📜</div>
       <div style="font-weight:600;margin:6px 0 2px">Coin history</div>
-      <div style="opacity:.7;font-size:12.5px;margin-bottom:8px">Your last ${entries.length} transactions</div>
+      <div style="opacity:.7;font-size:13px;margin-bottom:8px">Your last ${entries.length} transactions</div>
       <div style="text-align:left;max-height:min(50vh,320px);overflow-y:auto">${rows}</div>`;
     modal.appendChild(h);
     this.overlay.appendChild(modal);
@@ -2835,7 +2906,7 @@ export class SimpleUI {
       border: '1px solid rgba(120,160,255,0.45)',
       background: 'rgba(80,130,255,0.18)',
       color: '#cfe0ff',
-      fontSize: '13.5px',
+      fontSize: '14px',
       fontWeight: '600',
       cursor: 'pointer',
     });
@@ -2884,7 +2955,7 @@ export class SimpleUI {
       <textarea id="lead-msg" aria-label="Your message" autocomplete="off" placeholder="A role, a project, or a question" maxlength="1000" rows="3" style="${field}resize:vertical;"></textarea>
       <button id="lead-send" style="width:100%;${this.isTouch ? 'min-height:44px;' : ''}padding:11px;border:none;border-radius:10px;background:linear-gradient(135deg,#9C27B0,#6a1b9a);color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send message</button>
       <p id="lead-error" role="alert" hidden style="margin:8px 0 0;font-size:13px;line-height:1.4;color:#ffb4a8;"></p>
-      <p style="margin:8px 0 0;font-size:11px;color:#889;">Your email is used only to reply. <a href="/privacy.html" style="color:#b39ddb;${this.isTouch ? 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;' : ''}">Privacy</a></p>`;
+      <p style="margin:8px 0 0;font-size:12px;color:#889;">Your email is used only to reply. <a href="/privacy.html" target="_blank" rel="noopener" style="color:#b39ddb;${this.isTouch ? 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;' : ''}">Privacy</a></p>`;
     container.appendChild(form);
     // Keep keystrokes out of the game while typing.
     form
@@ -3128,7 +3199,7 @@ export class SimpleUI {
            ? `Your run: <strong style="color:#ffd54a;">${fmt(playerTimeMs)}</strong>`
            : 'Global top times'
        }</p>
-       <p id="rlb-status" role="status" style="margin:0 0 10px;font-size:13.5px;line-height:1.4;color:#dfe6ff;">${
+       <p id="rlb-status" role="status" style="margin:0 0 10px;font-size:14px;line-height:1.4;color:#dfe6ff;">${
          playerTimeMs != null ? 'Saving your time…' : 'Loading…'
        }</p>
        <div id="rlb-body" style="text-align:left;"></div>`,
@@ -3475,7 +3546,7 @@ export class SimpleUI {
     // hand-authored flavour text instead of a nightly agent pipeline.
     modal.insertAdjacentHTML(
       'beforeend',
-      `<p style="margin:14px 0 0;font-size:11px;color:#788;font-style:italic;">
+      `<p style="margin:14px 0 0;font-size:12px;color:#788;font-style:italic;">
         Compiled nightly by the island's AI analyst · daily jobs assigned by the AI town planner</p>`,
     );
     trackOnce('island_times_opened');
@@ -3732,7 +3803,7 @@ export class SimpleUI {
           border: '1px solid rgba(255,255,255,0.2)',
           background: 'rgba(12,12,20,0.9)',
           color: '#fff',
-          fontSize: '16px', // match the input: no iOS zoom, bigger tap targets
+          fontSize: '17px', // match the input: no iOS zoom, bigger tap targets
           cursor: 'pointer',
         });
         // pointerdown + preventDefault: fire before the input's blur→close and
@@ -3910,7 +3981,7 @@ export class SimpleUI {
     const stampRow = data.stamps
       .map(
         (s) =>
-          `<span title="${s.label}" style="font-size:22px;${s.has ? '' : 'filter:grayscale(1);opacity:0.35;'}">${s.icon}</span>`,
+          `<span title="${s.label}" style="font-size:20px;${s.has ? '' : 'filter:grayscale(1);opacity:0.35;'}">${s.icon}</span>`,
       )
       .join(' ');
     const hatRow = data.hats
@@ -3932,7 +4003,7 @@ export class SimpleUI {
     modal.insertAdjacentHTML(
       'beforeend',
       `<h2 style="margin:0 0 2px;color:#8a9bff;">📔 Island Journal</h2>
-       <p style="margin:0 0 10px;font-size:12.5px;color:#aab;">Everything you've found so far — and what's still out there.</p>
+       <p style="margin:0 0 10px;font-size:13px;color:#aab;">Everything you've found so far — and what's still out there.</p>
        ${meter('🛂 Zone stamps', data.stamps.filter((s) => s.has).length, data.stamps.length)}
        <div style="margin:6px 0 2px;">${stampRow}</div>
        ${meter('🎩 Hats collected', data.hats.filter((h) => h.owned).length, data.hats.length)}
@@ -3955,7 +4026,7 @@ export class SimpleUI {
               ${data.loops
                 .map(
                   (l) =>
-                    `<div style="display:flex;gap:8px;margin:5px 0;font-size:12.5px;line-height:1.45;">
+                    `<div style="display:flex;gap:8px;margin:5px 0;font-size:13px;line-height:1.45;">
                        <span style="font-size:15px;">${l.icon}</span>
                        <span><strong style="color:#dfe6ff;">${l.title}</strong> — <span style="color:#9ab;">${l.detail}</span></span></div>`,
                 )
@@ -4035,7 +4106,7 @@ export class SimpleUI {
          <span style="font-size:20px;width:24px;text-align:center;">${E(r.icon)}</span>
          <span style="flex:1;text-align:left;font-size:13px;">
            <strong style="color:#dfe6ff;">${E(r.label)}</strong>
-           <span style="display:block;color:#9ab;font-size:11.5px;line-height:1.35;">${E(r.hint)}</span>
+           <span style="display:block;color:#9ab;font-size:12px;line-height:1.35;">${E(r.hint)}</span>
          </span>
          <span style="color:${r.count > 0 ? '#8a9bff' : '#667'};font-weight:700;font-size:15px;
            min-width:2.2em;text-align:right;">${r.count}</span>
@@ -4053,7 +4124,7 @@ export class SimpleUI {
     const toolStrip = data.tools
       .map(
         (t) =>
-          `<span title="${SimpleUI.esc(t.name)}" style="font-size:22px;${t.owned ? '' : 'filter:grayscale(1);opacity:0.35;'}">${SimpleUI.esc(t.icon)}</span>`,
+          `<span title="${SimpleUI.esc(t.name)}" style="font-size:20px;${t.owned ? '' : 'filter:grayscale(1);opacity:0.35;'}">${SimpleUI.esc(t.icon)}</span>`,
       )
       .join(' ');
 
@@ -4062,7 +4133,7 @@ export class SimpleUI {
     modal.insertAdjacentHTML(
       'beforeend',
       `<h2 style="margin:0 0 2px;color:#8a9bff;">🎒 Your Pack</h2>
-       <p style="margin:0 0 8px;font-size:12.5px;color:#aab;">Everything you're carrying right now.</p>
+       <p style="margin:0 0 8px;font-size:13px;color:#aab;">Everything you're carrying right now.</p>
        <div style="display:flex;justify-content:center;gap:8px;margin:0 0 4px;">
          <span style="background:#3a341acc;border:1px solid #b39b3a;border-radius:999px;
            padding:4px 12px;font-size:13px;color:#ffd54a;font-weight:700;">🪙 ${data.coins}</span>
@@ -4082,7 +4153,7 @@ export class SimpleUI {
                   border-radius:10px;padding:6px 10px;">
                   <span style="font-size:20px;">${E(data.carrying.icon)}</span>
                   <span style="flex:1;font-size:13px;"><strong style="color:#dfe6ff;">${E(data.carrying.label)}</strong>
-                    <span style="display:block;color:#9ab;font-size:11.5px;">${E(data.carrying.hint)}</span></span>
+                    <span style="display:block;color:#9ab;font-size:12px;">${E(data.carrying.hint)}</span></span>
                 </div>`
              : ''
          }
@@ -4154,8 +4225,8 @@ export class SimpleUI {
       `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
          <div style="font-size:17px;font-weight:700;">🔨 Raise a structure</div>
          <div style="display:flex;gap:8px;align-items:center;">
-           <span style="background:#3a2f1acc;border:1px solid #8a6238;border-radius:999px;padding:3px 10px;font-size:12.5px;">🪵 ${wallet.timber}</span>
-           <span style="background:#3a341acc;border:1px solid #b39b3a;border-radius:999px;padding:3px 10px;font-size:12.5px;">🪙 ${wallet.coins}</span>
+           <span style="background:#3a2f1acc;border:1px solid #8a6238;border-radius:999px;padding:3px 10px;font-size:13px;">🪵 ${wallet.timber}</span>
+           <span style="background:#3a341acc;border:1px solid #b39b3a;border-radius:999px;padding:3px 10px;font-size:13px;">🪙 ${wallet.coins}</span>
          </div>
        </div>
        <div id="chooser-rows">
@@ -4163,7 +4234,7 @@ export class SimpleUI {
          .map(
            (r) => `
          <div style="display:flex;align-items:center;gap:11px;min-height:44px;padding:7px 4px;border-bottom:1px solid rgba(255,255,255,0.07);${r.affordable ? '' : 'opacity:0.62;'}">
-           <span style="font-size:22px;">${r.icon}</span>
+           <span style="font-size:20px;">${r.icon}</span>
            <span style="flex:1;">
              <strong style="text-transform:capitalize;">${r.name}</strong>
              <span style="display:block;font-size:12px;color:${r.affordable ? '#9ab' : '#e0a0a0'};">
@@ -4203,7 +4274,7 @@ export class SimpleUI {
     modal.insertAdjacentHTML(
       'beforeend',
       `<div style="font-size:17px;font-weight:700;margin-bottom:4px;">${build.icon} Your ${build.name}</div>
-       <div style="font-size:12.5px;color:#9ab;margin-bottom:14px;">Reclaim returns the timber — the carpenter keeps the coins as his labour fee.</div>
+       <div style="font-size:13px;color:#9ab;margin-bottom:14px;">Reclaim returns the timber — the carpenter keeps the coins as his labour fee.</div>
        <button id="build-reclaim" style="display:block;width:100%;margin:6px 0;padding:11px;background:#3a2f1a;color:#ffe9c9;border:1px solid #8a6238;border-radius:10px;font-size:14px;cursor:pointer;">🪵 Reclaim timber (+${build.timber} 🪵)</button>
        <button id="build-replace" style="display:block;width:100%;margin:6px 0;padding:11px;background:#26263a;color:#cfe0ff;border:1px solid rgba(120,160,255,0.35);border-radius:10px;font-size:14px;cursor:pointer;">🔨 Replace with something else…</button>
        <button id="build-cancel" style="display:block;width:100%;margin:6px 0;padding:9px;background:none;color:#889;border:none;font-size:13px;cursor:pointer;">Leave it standing</button>`,
@@ -4674,7 +4745,7 @@ export class SimpleUI {
       color: '#fff',
       padding: '13px 22px',
       borderRadius: '14px',
-      fontSize: '15.5px',
+      fontSize: '15px',
       lineHeight: '1.45',
       textAlign: 'center',
       fontFamily: 'system-ui, sans-serif',
@@ -4801,9 +4872,9 @@ export class SimpleUI {
        <textarea id="sh-msg" aria-label="Your note" maxlength="200" rows="3" placeholder="Hi Abbas! 👋" style="${field}resize:none;"></textarea>
        <input id="sh-email" aria-label="Your email, only if you'd like a reply (optional)" autocomplete="email" maxlength="80" type="email" placeholder="Email — only if you'd like a reply (optional)" style="${field}" />
        <button id="sh-send" class="ds-press" style="width:100%;padding:11px;border:none;border-radius:10px;margin-top:2px;
-         background:${DS.primary};color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;">Send 👋</button>
+         background:${DS.primary};color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Send 👋</button>
        <p id="sh-error" role="alert" hidden style="margin:8px 0 0;font-size:13px;line-height:1.4;color:#ffb4a8;"></p>
-       <p style="margin:9px 0 0;font-size:11px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
+       <p style="margin:9px 0 0;font-size:12px;color:#788;">Notes appear in the public guestbook — with an email it goes straight to Abbas instead.</p>`,
     );
     this.overlay.appendChild(modal);
     trackOnce('say_hi_opened');
@@ -4965,7 +5036,7 @@ export class SimpleUI {
              background:${it.done ? 'rgba(18,183,106,0.10)' : 'rgba(255,255,255,0.03)'};margin:4px 0;text-align:left;">
              <span style="font-size:15px;line-height:1.3;">${it.done ? '✅' : '⬜'}</span>
              <div style="flex:1;">
-               <div style="font-size:13.5px;font-weight:600;color:${it.done ? '#9fd8b8' : '#e8edf5'};">${it.icon} ${this.escapeHtml(it.label)}</div>
+               <div style="font-size:14px;font-weight:600;color:${it.done ? '#9fd8b8' : '#e8edf5'};">${it.icon} ${this.escapeHtml(it.label)}</div>
                ${it.done ? '' : `<div style="font-size:12px;color:#93a;color:#8fa0b8;margin-top:1px;">${this.escapeHtml(this.touchifyPlain(it.hint))}</div>`}
              </div>
            </div>`,
@@ -5015,7 +5086,7 @@ export class SimpleUI {
     });
     modal.insertAdjacentHTML(
       'beforeend',
-      `<h2 style="margin:0 0 10px;color:#8a9bff;font-size:18px;">📸 Your island shot</h2>
+      `<h2 style="margin:0 0 10px;color:#8a9bff;font-size:17px;">📸 Your island shot</h2>
        <img src="${this.photoUrl}" alt="Island photo" style="width:100%;border-radius:10px;display:block;margin-bottom:14px;" />`,
     );
     const row = document.createElement('div');
@@ -5030,7 +5101,7 @@ export class SimpleUI {
       border: '1px solid rgba(120,160,255,0.45)',
       background: 'rgba(80,130,255,0.18)',
       color: '#cfe0ff',
-      fontSize: '13.5px',
+      fontSize: '14px',
       fontWeight: '600',
       cursor: 'pointer',
     });
@@ -5058,7 +5129,7 @@ export class SimpleUI {
       border: '1px solid rgba(255,255,255,0.25)',
       background: 'rgba(255,255,255,0.08)',
       color: '#fff',
-      fontSize: '13.5px',
+      fontSize: '14px',
       fontWeight: '600',
       textDecoration: 'none',
     });
@@ -5148,7 +5219,7 @@ export class SimpleUI {
       top: '50%',
       left: '50%',
       transform: 'translate(-50%, -50%)',
-      background: 'rgba(12, 12, 20, 0.95)',
+      background: 'rgb(12, 12, 20)', // opaque: no minimap or compass through it (D16)
       color: 'white',
       padding: '24px',
       borderRadius: '16px',
@@ -5195,7 +5266,7 @@ export class SimpleUI {
         : `<span>Passport ${pp.count()}/${pp.total()}</span>`
       : '<span>Passport</span>';
     const tile =
-      'display:flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:13.5px;cursor:pointer;';
+      'display:flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:10px 8px;background:#26263340;color:#fff;border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:14px;cursor:pointer;';
     // The group headers take the 11 px uppercase caption class (D13).
     const group = 'margin:14px 0 2px;text-align:left;';
     menu.innerHTML = `
@@ -5280,7 +5351,7 @@ export class SimpleUI {
     });
     this.portfolioMenuDiv = menu;
     this.overlay.appendChild(menu);
-    if (window.innerHeight <= 500) this.addScrollFade(menu, 'rgba(12, 12, 20, 0.95)');
+    if (window.innerHeight <= 500) this.addScrollFade(menu, 'rgb(12, 12, 20)');
   }
 
   // ── Controls & settings (D8) ───────────────────────────────────────────
@@ -5814,43 +5885,135 @@ export class SimpleUI {
     });
     base.appendChild(thumb);
     base.dataset.guide = 'joystick'; // First steps' ghost thumb sits on the ring (A6)
+    // D15: the 11 px uppercase MOVE caption under the ring, for the first
+    // session only (until the stick is first engaged; without storage, for
+    // the page's life).
+    let moveSeen = false;
+    try {
+      moveSeen = localStorage.getItem('ds_move_seen') === '1';
+    } catch {
+      /* storage blocked: show it */
+    }
+    let caption: HTMLDivElement | null = null;
+    if (!moveSeen) {
+      caption = document.createElement('div');
+      caption.className = 'ds-caption';
+      caption.textContent = 'Move';
+      Object.assign(caption.style, {
+        position: 'absolute',
+        left: '0',
+        top: 'calc(100% + 3px)',
+        width: '100%',
+        textAlign: 'center',
+        pointerEvents: 'none',
+        textShadow: '0 1px 2px rgba(0,0,0,0.7)',
+      });
+      base.appendChild(caption);
+    }
     hit.appendChild(base);
     hit.classList.add('ds-touch-ctl'); // fades after keyboard-only play (D7)
     this.overlay.appendChild(hit);
     this.panels.registerLayer('touch-controls', hit);
 
+    // Thumb and ring move by transform (D11's compositor-only rule); the
+    // ring's left/bottom stay at its 26 px rest spot.
     const moveThumb = (dx: number, dy: number) => {
-      thumb.style.left = `${31 + dx}px`;
-      thumb.style.top = `${31 + dy}px`;
+      thumb.style.transform = dx || dy ? `translate(${dx}px, ${dy}px)` : '';
+    };
+    // D15 (JOY-01): a FLOATING origin. The stick's zero is wherever the
+    // thumb lands, so a touchdown anywhere in the 166 px square reads |v| = 0
+    // instead of a full-speed lurch. The ring follows the thumb but is
+    // clamped so the 110 px ring stays inside the square (its centre within
+    // 55..111 px of the square's left and top); a landing beyond the clamp
+    // shows the thumb off-centre in the ring, still at rest.
+    const HIT = 166;
+    const RING = 110;
+    const REST = 26; // the ring's home: left/bottom 26 px
+    const MAX = 40; // the thumb's travel: full deflection, the stick's radius
+    // Published for the probes (mobile.cjs's stick plateaus): deflection is
+    // measured against this travel, not the 110 px ring's half-width.
+    base.dataset.stickRadius = String(MAX);
+    // Hysteresis: engage at 12% deflection; once engaged, release only below
+    // 8%, renormalised from 8% so the output is continuous on the way down.
+    const ENGAGE = 0.12;
+    const RELEASE = 0.08;
+    // The run colour mirrors A's rim run (main-simple's STICK_RUN_MAG 0.95
+    // held for STICK_RUN_MS 250): D reads no A code, so the two are named
+    // here and must move together.
+    const STICK_RUN_MAG = 0.95;
+    const STICK_RUN_MS = 250;
+    const RING_BORDER = '2px solid rgba(255,255,255,0.25)';
+    const RING_RUN = '2px solid #ffb547';
+    let originX = 0;
+    let originY = 0;
+    let ringCx = 0; // the ring centre, client px, for the thumb's offset
+    let ringCy = 0;
+    let engaged = false;
+    let runTimer: number | null = null;
+    let running = false;
+    const setRun = (on: boolean): void => {
+      if (running === on) return;
+      running = on;
+      base.style.border = on ? RING_RUN : RING_BORDER;
+      if (on) hapticPulse(10);
+    };
+    const clearRun = (): void => {
+      if (runTimer !== null) window.clearTimeout(runTimer);
+      runTimer = null;
+      setRun(false);
     };
     // Identifier-tracked: e.touches[0] is the earliest finger ON THE PAGE,
     // so with a camera finger already down the joystick read the WRONG
     // finger and movement lurched. Track the pad's own finger by identifier.
     let joyTouchId: number | null = null;
-    const applyJoyTouch = (t: Touch) => {
-      const rect = base.getBoundingClientRect();
-      let dx = t.clientX - (rect.left + rect.width / 2);
-      let dy = t.clientY - (rect.top + rect.height / 2);
-      const len = Math.hypot(dx, dy);
-      const max = 40;
-      if (len > max) {
-        dx = (dx / len) * max;
-        dy = (dy / len) * max;
+    // The MOVE caption goes at the stick's first engage (|deflection| >= 12%),
+    // so a tap that never moves the stick leaves it up.
+    const dismissMoveCaption = () => {
+      if (!caption) return;
+      caption.remove();
+      caption = null;
+      try {
+        localStorage.setItem('ds_move_seen', '1');
+      } catch {
+        /* storage blocked: the caption simply returns next visit */
       }
-      moveThumb(dx, dy);
-      // ~12% radial dead zone, renormalized so the range past it still spans
-      // 0..1: a resting thumb's 2-3px jitter must not creep the player or
-      // flicker the idle/walk animation.
-      const DEAD = 0.12;
-      const mag = Math.min(1, len / max);
-      if (mag < DEAD) {
+    };
+    const applyJoyTouch = (t: Touch) => {
+      const dx = t.clientX - originX;
+      const dy = t.clientY - originY;
+      const len = Math.hypot(dx, dy);
+      const mag = Math.min(1, len / MAX);
+      // The thumb shows where the finger is relative to the drawn ring.
+      let tx = t.clientX - ringCx;
+      let ty = t.clientY - ringCy;
+      const tl = Math.hypot(tx, ty);
+      if (tl > MAX) {
+        tx = (tx / tl) * MAX;
+        ty = (ty / tl) * MAX;
+      }
+      moveThumb(tx, ty);
+      if (!engaged && mag >= ENGAGE) {
+        engaged = true;
+        dismissMoveCaption();
+      } else if (engaged && mag < RELEASE) engaged = false;
+      const out = engaged ? (mag - RELEASE) / (1 - RELEASE) : 0;
+      if (out > 0 && len > 0) {
+        this.joyState.strafe = (dx / len) * out;
+        this.joyState.forward = (-dy / len) * out;
+      } else {
         this.joyState.strafe = 0;
         this.joyState.forward = 0;
-      } else {
-        const scale = (mag - DEAD) / (1 - DEAD) / (mag * max);
-        this.joyState.strafe = dx * scale;
-        this.joyState.forward = -dy * scale;
       }
+      if (out >= STICK_RUN_MAG) {
+        if (runTimer === null && !running) {
+          runTimer = window.setTimeout(() => {
+            runTimer = null;
+            const j = this.joyState;
+            if (joyTouchId !== null && Math.hypot(j.forward, j.strafe) >= STICK_RUN_MAG)
+              setRun(true);
+          }, STICK_RUN_MS);
+        }
+      } else clearRun();
     };
     hit.addEventListener(
       'touchstart',
@@ -5860,7 +6023,19 @@ export class SimpleUI {
         if (joyTouchId !== null || e.changedTouches.length === 0) return;
         const t = e.changedTouches[0];
         joyTouchId = t.identifier;
-        hapticPulse(5); // first-engage tick
+        engaged = false;
+        // The ring jumps to the thumb (no transition on the way in).
+        const r = hit.getBoundingClientRect();
+        const cx = Math.max(RING / 2, Math.min(HIT - RING / 2, t.clientX - r.left));
+        const cy = Math.max(RING / 2, Math.min(HIT - RING / 2, t.clientY - r.top));
+        base.style.transition = 'none';
+        thumb.style.transition = 'none';
+        base.style.transform = `translate(${cx - RING / 2 - REST}px, ${cy - (HIT - REST - RING / 2)}px)`;
+        originX = t.clientX;
+        originY = t.clientY;
+        ringCx = r.left + cx;
+        ringCy = r.top + cy;
+        hapticPulse(10); // first-engage tick
         applyJoyTouch(t);
       },
       { passive: false },
@@ -5890,9 +6065,17 @@ export class SimpleUI {
       for (let i = 0; i < e.changedTouches.length; i++) {
         if (e.changedTouches[i].identifier === joyTouchId) {
           joyTouchId = null;
+          engaged = false;
+          clearRun();
           this.joyState.forward = 0;
           this.joyState.strafe = 0;
+          // D15: the thumb eases home over 120 ms (release only; set
+          // synchronously, before the move, so it is readable at once) and
+          // the ring drifts back to its rest spot over 200 ms.
+          thumb.style.transition = 'transform 120ms cubic-bezier(.2,.9,.3,1)';
+          base.style.transition = 'transform 200ms ease-out';
           moveThumb(0, 0);
+          base.style.transform = '';
           break;
         }
       }
@@ -5921,9 +6104,16 @@ export class SimpleUI {
     ): HTMLElement => {
       const btn = document.createElement('div');
       btn.classList.add('ds-touch-ctl');
+      // D15: a named button for assistive tech: 'Use (E)', 'Jump (Space)'.
+      const keyName = key === ' ' ? 'Space' : key.length === 1 ? key.toUpperCase() : key;
+      btn.setAttribute('role', 'button');
+      btn.setAttribute(
+        'aria-label',
+        `${caption.charAt(0)}${caption.slice(1).toLowerCase()} (${keyName})`,
+      );
       btn.innerHTML =
         `<div style="font-size:24px;line-height:1;">${icon}</div>` +
-        `<div style="font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,0.6);">${caption}</div>`;
+        `<div class="ds-caption" style="font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:inherit;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,0.6);">${caption}</div>`;
       Object.assign(btn.style, {
         position: 'absolute',
         right: `calc(var(--sar, 0px) + ${rightPx}px)`,
@@ -5964,7 +6154,7 @@ export class SimpleUI {
           e.stopPropagation();
           btn.style.transform = 'scale(0.9)';
           btn.style.filter = 'brightness(1.15)';
-          hapticPulse(8);
+          hapticPulse(12);
           fire('keydown');
           if (holdRepeat === null) {
             holdRepeat = window.setInterval(() => fire('keydown', true), 700);
@@ -6001,7 +6191,7 @@ export class SimpleUI {
       return btn;
     };
     outdoor(makeButton('⤒', 'JUMP', '124px', 'Space', ' ', DS.ringJump));
-    outdoor(makeButton('👋', 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave));
+    outdoor(makeButton(icon('wave', 26), 'WAVE', '212px', 'KeyQ', 'q', DS.ringWave));
     // DIVE — touch's only route to the free dive (Shift is desktop-only).
     // Contextual like FEED/EAT: it exists only while actually SWIMMING, so a
     // walker never sees it. Gated on isSwimming(), NOT isInWater(): the
@@ -6013,7 +6203,7 @@ export class SimpleUI {
     // (the exact collision the FEED comment below documents). It also sat in
     // the tappable prompt lane (bottom+300) in portrait.
     this.diveBtnEl = makeButton(
-      '🤿',
+      icon('dive', 26),
       'DIVE',
       '212px',
       'ShiftLeft',
@@ -6036,7 +6226,7 @@ export class SimpleUI {
     // inventory changes; visibility (not display) so PanelManager's layer
     // display toggling and this contextual gate never fight over one prop.
     this.feedBtnEl = makeButton(
-      '🌾',
+      icon('feed', 26),
       'FEED',
       '36px',
       'KeyF',
@@ -6046,7 +6236,16 @@ export class SimpleUI {
       'aux-controls',
     );
     // EAT stacks over FEED in the second column (124px over 36px, same 112 inset)
-    this.eatBtnEl = makeButton('🍽️', 'EAT', '124px', 'KeyG', 'g', DS.ringEat, 112, 'aux-controls');
+    this.eatBtnEl = makeButton(
+      icon('eat', 26),
+      'EAT',
+      '124px',
+      'KeyG',
+      'g',
+      DS.ringEat,
+      112,
+      'aux-controls',
+    );
     this.feedBtnEl.style.visibility = 'hidden';
     this.eatBtnEl.style.visibility = 'hidden';
     outdoor(this.feedBtnEl);
@@ -6209,22 +6408,22 @@ export class SimpleUI {
                    border-radius:50%;background:#cfe4f7;box-shadow:0 0 10px rgba(160,200,240,0.8);"></div>
             </div>
           </div>
-          <div style="font-family:'Bebas Neue',system-ui,sans-serif;font-size:min(48px,12vw);line-height:1.05;letter-spacing:1.5px;">
-            DIGISCALABILITY LIFE ISLAND</div>
-          <div style="color:#a9bdd4;font-size:12.5px;margin-top:6px;max-width:290px;">
+          <div style="font-family:var(--font-display, 'Bebas Neue', sans-serif);font-size:min(48px,12vw);line-height:1.05;letter-spacing:1.5px;">
+            DIGISCALABILITY <span style="white-space:nowrap">LIFE ISLAND</span></div>
+          <div style="color:#a9bdd4;font-size:13px;margin-top:6px;max-width:290px;">
             Abbas Ali's hand-built 3D portfolio — a living 3D world where
             ${Object.keys(AI_NPCS).length} villagers talk through Claude Haiku 4.5.</div>
-          <div id="ld-msg" style="color:#8fa6bd;font-size:12.5px;margin:8px 0 16px;min-height:16px;"></div>
+          <div id="ld-msg" style="color:#8fa6bd;font-size:13px;margin:8px 0 16px;min-height:16px;"></div>
           <div style="width:230px;height:7px;background:rgba(255,255,255,0.12);border-radius:6px;overflow:hidden;">
             <div id="ld-bar" style="width:0%;height:100%;border-radius:6px;
                  background:linear-gradient(90deg,#4CAF50,#7fd18b);transition:width 0.35s ease;"></div>
           </div>
-          <div id="ld-pct" style="color:#6e8298;font-size:11px;margin-top:8px;">0%</div>
+          <div id="ld-pct" style="color:#6e8298;font-size:12px;margin-top:8px;">0%</div>
           ${
             document.getElementById('boot-fallback')
               ? `<button id="ld-skip" type="button" style="margin-top:18px;padding:10px 16px;border-radius:999px;
                   border:1px solid rgba(255,255,255,0.22);background:rgba(255,255,255,0.06);color:#cfe0ff;
-                  font-family:inherit;font-size:13.5px;font-weight:600;cursor:pointer;">Quick version (no 3D) →</button>`
+                  font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;">Quick version (no 3D) →</button>`
               : ''
           }
         </div>`;
@@ -6559,7 +6758,7 @@ export class SimpleUI {
     // The title is the page's h1 (axe: no level-one heading), sized as the
     // h2 it replaced.
     this.welcomeDiv.innerHTML = returning
-      ? `<h1 style="margin: 0 0 12px 0; font-size: 1.5em; color: #4CAF50;">👋 Welcome back!</h1>
+      ? `<h1 style="margin: 0 0 12px 0; font-family: var(--font-display, 'Bebas Neue', sans-serif); font-weight: 400; font-size: 40px; line-height: 1.05; letter-spacing: 0.5px; color: #4CAF50;">👋 Welcome back!</h1>
          ${progressHtml}
          ${awayHtml}
          ${recruiterPill}
@@ -6567,14 +6766,14 @@ export class SimpleUI {
          ${exploreBtn}
          ${controlsStrip}`
       : `
-      <h1 style="margin: 0 0 8px 0; font-size: 1.5em; color: #4CAF50;">DigiScalability Life Island</h1>
+      <h1 style="margin: 0 0 8px 0; font-family: var(--font-display, 'Bebas Neue', sans-serif); font-weight: 400; font-size: 40px; line-height: 1.05; letter-spacing: 0.5px; color: #4CAF50;">DigiScalability <span style="white-space:nowrap">Life Island</span></h1>
       <p style="margin: 0 0 10px 0; font-size:15px; line-height:1.5;">
         I'm <strong>Abbas</strong> — I build AI products end to end, and this island is my
         portfolio. Walk up to a district to open it, or jump straight there below.</p>
       ${
         compact
           ? ''
-          : `<p data-ai-line style="margin: 0 0 14px 0; font-size:13.5px; line-height:1.5; color:#cdd6e4;">
+          : `<p data-ai-line style="margin: 0 0 14px 0; font-size:14px; line-height:1.5; color:#cdd6e4;">
         ${Object.keys(AI_NPCS).length} villagers talk through <strong>Claude Haiku 4.5</strong> —
         walk up and ask them anything.</p>`
       }
@@ -6867,7 +7066,7 @@ export class SimpleUI {
       : left.length === PASSPORT_ZONES.length
         ? `🛂 Passport: no stamps yet — ${left.join(', ')} to visit`
         : `🛂 Passport: ${pp.count()} of ${pp.total()} stamps — ${left.join(', ')} to go`;
-    return `<p data-passport-progress style="margin:0 0 12px; font-size:13.5px; line-height:1.45; color:#dfe6f2;">${text}</p>`;
+    return `<p data-passport-progress style="margin:0 0 12px; font-size:14px; line-height:1.45; color:#dfe6f2;">${text}</p>`;
   }
 
   /** Set by a welcome CTA that opens a panel or the tour; read once by
@@ -6927,7 +7126,7 @@ export class SimpleUI {
     modal.setAttribute('aria-modal', 'true');
     modal.setAttribute('aria-labelledby', 'ds-name-title');
     modal.innerHTML = `
-      <div id="ds-name-title" style="font-size:26px;font-weight:700;">🌎 Welcome to Life Island</div>
+      <div id="ds-name-title" style="font-size:24px;font-weight:700;">🌎 Welcome to Life Island</div>
       <label for="ds-name-input" style="opacity:0.85;font-size:15px;max-width:320px;">What should other visitors call you?</label>
     `;
     const input = document.createElement('input');
@@ -6938,7 +7137,7 @@ export class SimpleUI {
     input.value = defaultName || '';
     Object.assign(input.style, {
       padding: '11px 14px',
-      fontSize: '16px',
+      fontSize: '17px',
       borderRadius: '12px',
       border: '1px solid rgba(120,160,255,0.35)',
       background: 'rgba(255,255,255,0.1)',
@@ -6952,7 +7151,7 @@ export class SimpleUI {
     btn.className = 'ds-press';
     Object.assign(btn.style, {
       padding: '12px 26px',
-      fontSize: '16px',
+      fontSize: '17px',
       fontWeight: '700',
       borderRadius: '12px',
       border: 'none',
@@ -6965,7 +7164,7 @@ export class SimpleUI {
     err.setAttribute('role', 'alert');
     Object.assign(err.style, {
       color: '#ff9a9a',
-      fontSize: '12.5px',
+      fontSize: '13px',
       marginTop: '9px',
       minHeight: '16px',
     });
@@ -7299,6 +7498,9 @@ export class SimpleUI {
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
+        // D15: a 44 px touch target on phones, as the compass pill has
+        // (34 px line + 2 × 5 px padding).
+        ...(this.isTouch ? { lineHeight: '34px', minWidth: '44px', boxSizing: 'border-box' } : {}),
       });
       this.envBadgeDiv.title = 'Live weather settings';
       this.envBadgeDiv.addEventListener('click', (e) => {
@@ -7343,7 +7545,7 @@ export class SimpleUI {
       color: '#e6edf7',
       padding: '13px 15px',
       borderRadius: '12px',
-      fontSize: '12.5px',
+      fontSize: '13px',
       lineHeight: '1.5',
       fontFamily: 'system-ui, sans-serif',
       maxWidth: '270px',
@@ -7359,10 +7561,10 @@ export class SimpleUI {
         approximate location with a weather service. Day and night already follow
         your device clock — that never leaves your device.
       </div>
-      <button id="wx-toggle" style="background:${on ? '#c0392b' : '#4CAF50'};color:#fff;border:none;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12.5px;">
+      <button id="wx-toggle" style="background:${on ? '#c0392b' : '#4CAF50'};color:#fff;border:none;padding:6px 12px;border-radius:8px;cursor:pointer;font-size:13px;">
         ${on ? 'Turn off' : 'Turn on'}
       </button>
-      <a href="/privacy.html" target="_blank" rel="noopener" style="color:#7fb2ff;margin-left:10px;font-size:11.5px;">Privacy</a>
+      <a href="/privacy.html" target="_blank" rel="noopener" style="color:#7fb2ff;margin-left:10px;font-size:12px;">Privacy</a>
     `;
     (pop.querySelector('#wx-toggle') as HTMLButtonElement).addEventListener('click', () => {
       const next = !this.weatherConsentState;
@@ -7501,9 +7703,14 @@ export class SimpleUI {
     // Rim labels carry the NAME too: RADAR_RANGE (1.35 rad) is narrower than
     // the 1.57 rad district spacing, so neighbouring districts are ALWAYS
     // edge-clamped — anonymous coloured dots taught nobody the island's
-    // shape. Overlap-skip keeps crossings (two rim dots close together)
-    // from smearing text over text.
-    const rimLabels: Array<{ x: number; y: number }> = [];
+    // shape. In-range zones draw first, nearest first, and claim their label
+    // boxes; a label whose text box would overlap one already drawn is
+    // dropped (D16), so crossings never smear text over text.
+    const labelBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+    // D16: every minimap label is 10.5 px/600 ON SCREEN (ts converts to the
+    // 172 px draw space) with a 2 px stroke, so its cap height is >= 7 px.
+    const labelFont = `600 ${(10.5 * ts).toFixed(1)}px system-ui, sans-serif`;
+    const labelStroke = 2 * ts;
     // A name wider than its spot allows slides in along its row, so
     // 'Professional' near the east or west rim stays whole: the disc clips
     // whatever crosses it ('Work' never reached that far). Call with the
@@ -7516,8 +7723,12 @@ export class SimpleUI {
       );
       return cx + Math.max(-reach, Math.min(reach, x - cx));
     };
-    for (const z of data.zones) {
-      const p = place(z);
+    const placed = data.zones
+      .map((z) => ({ z, p: place(z) }))
+      .sort((a, b) => Number(a.p.edge) - Number(b.p.edge) || a.z.dist - b.z.dist);
+    const collides = (x: number, y: number, w: number, h: number): boolean =>
+      labelBoxes.some((r) => Math.abs(r.x - x) * 2 < r.w + w && Math.abs(r.y - y) * 2 < r.h + h);
+    for (const { z, p } of placed) {
       if (p.edge) {
         ctx.fillStyle = z.color;
         ctx.globalAlpha = 0.6;
@@ -7525,20 +7736,24 @@ export class SimpleUI {
         ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
-        if (z.label && !rimLabels.some((r) => Math.hypot(r.x - p.x, r.y - p.y) < 26)) {
-          rimLabels.push({ x: p.x, y: p.y });
+        if (z.label) {
           // Nudge the text toward the centre so it stays inside the disc.
           const ny = p.y + (cy - p.y) * 0.16;
           ctx.save();
-          ctx.font = `600 ${(8 * ts).toFixed(1)}px system-ui, sans-serif`;
+          ctx.font = labelFont;
           const nx = fitX(z.label, p.x + (cx - p.x) * 0.16, ny);
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.lineWidth = 2.5;
-          ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-          ctx.strokeText(z.label, nx, ny);
-          ctx.fillStyle = 'rgba(255,255,255,0.85)';
-          ctx.fillText(z.label, nx, ny);
+          const w = ctx.measureText(z.label).width + labelStroke;
+          const h = 10.5 * ts;
+          if (!collides(nx, ny, w, h)) {
+            labelBoxes.push({ x: nx, y: ny, w, h });
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.lineWidth = labelStroke;
+            ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+            ctx.strokeText(z.label, nx, ny);
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.fillText(z.label, nx, ny);
+          }
           ctx.restore();
         }
         continue;
@@ -7555,15 +7770,20 @@ export class SimpleUI {
       // both the dark disc and a bright marker.
       if (z.label) {
         ctx.save();
-        ctx.font = `600 ${(8.5 * ts).toFixed(1)}px system-ui, sans-serif`;
+        ctx.font = labelFont;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.lineWidth = 2.5;
+        ctx.lineWidth = labelStroke;
         ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-        const lx = fitX(z.label, p.x, p.y + 5.5 + 4.5 * ts);
-        ctx.strokeText(z.label, lx, p.y + 5.5);
-        ctx.fillStyle = 'rgba(255,255,255,0.95)';
-        ctx.fillText(z.label, lx, p.y + 5.5);
+        const ly = p.y + 5.5 + 5.25 * ts;
+        const lx = fitX(z.label, p.x, ly);
+        const lw = ctx.measureText(z.label).width + labelStroke;
+        if (!collides(lx, ly, lw, 10.5 * ts)) {
+          labelBoxes.push({ x: lx, y: ly, w: lw, h: 10.5 * ts });
+          ctx.strokeText(z.label, lx, p.y + 5.5);
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          ctx.fillText(z.label, lx, p.y + 5.5);
+        }
         ctx.restore();
       }
       ctx.strokeStyle = z.color;
@@ -7739,7 +7959,9 @@ export class SimpleUI {
     // ── Online count pill along the bottom of the ring ──────────────────
     const online = data.online ?? peers.length + 1;
     const label = `${online} ONLINE`;
-    ctx.font = `700 ${(9 * ts).toFixed(1)}px system-ui, sans-serif`;
+    // D16: the caption is a minimap label too, so it takes the labels' 10.5 px
+    // on screen (cap height >= 7 px); at 9 px it read 6.7 px on a 104 px disc.
+    ctx.font = `700 ${(10.5 * ts).toFixed(1)}px system-ui, sans-serif`;
     const tw = ctx.measureText(label).width;
     const pillW = tw + 22;
     const pillH = 15 * ts;
@@ -7865,9 +8087,9 @@ export class SimpleUI {
             <div style="font-size:12px;color:${short && !it.owned ? '#e0a0a0' : '#aab'};line-height:1.35;">${subBits.join(' · ')}</div>
           </div>
           <button data-shop-id="${it.id}" ${disabled ? 'disabled' : ''} style="
-            background:${it.equipped || ownedTool ? '#2e7d32' : '#ffd34a'};
-            color:${it.equipped || ownedTool ? 'white' : '#332200'};
-            border:none;padding:10px 16px;border-radius:8px;font-weight:700;min-height:40px;white-space:nowrap;
+            background:${it.equipped || ownedTool ? DS.ink700 : '#ffd34a'};
+            color:${it.equipped || ownedTool ? DS.text1 : '#332200'};
+            border:${it.equipped || ownedTool ? `1px solid ${DS.lineStrong}` : 'none'};padding:10px 16px;border-radius:8px;font-weight:700;min-height:40px;white-space:nowrap;
             cursor:${disabled ? 'default' : 'pointer'};opacity:${disabled && !it.equipped && !ownedTool ? 0.45 : 1};
           ">${btnLabel}</button>
         </div>`;
@@ -7882,8 +8104,8 @@ export class SimpleUI {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
         <h3 style="margin:0;color:#ffd34a;">🛒 Island Shop</h3>
         <div style="display:flex;gap:12px;align-items:center;">
-          <span style="color:#ffd34a;font-weight:800;font-size:16px;background:rgba(255,211,74,0.12);padding:4px 12px;border-radius:999px;">🪙 ${state.coins}</span>
-          <button type="button" id="shop-close" aria-label="Close the shop" style="cursor:pointer;font-size:18px;width:44px;height:44px;padding:0;background:transparent;border:none;color:#fff;">✕</button>
+          <span style="color:#ffd34a;font-weight:800;font-size:17px;background:rgba(255,211,74,0.12);padding:4px 12px;border-radius:999px;">🪙 ${state.coins}</span>
+          <button type="button" id="shop-close" aria-label="Close the shop" style="cursor:pointer;font-size:17px;width:44px;height:44px;padding:0;background:transparent;border:none;color:#fff;">✕</button>
         </div>
       </div>
       <div id="shop-tabs" style="display:flex;gap:6px;margin-bottom:8px;">
@@ -7959,6 +8181,20 @@ export class SimpleUI {
     });
     this.overlay.appendChild(this.shopDiv);
     bindRows();
+    // D15: a tap on a refused (disabled, unaffordable) buy buzzes
+    // [12, 40, 12]. A disabled button fires no click, but its touchstart
+    // still bubbles here.
+    this.shopDiv!.querySelector('#shop-rows')?.addEventListener(
+      'touchstart',
+      (e) => {
+        const b = (e.target as Element | null)?.closest?.('button[data-shop-id]');
+        const it = b && state.items.find((x) => x.id === b.getAttribute('data-shop-id'));
+        if (b && (b as HTMLButtonElement).disabled && it && !it.owned && state.coins < it.price) {
+          hapticPulse([12, 40, 12]);
+        }
+      },
+      { passive: true },
+    );
     // Panel registry: exclusivity + chip/touch-control hiding. ownEscape —
     // the document-level Esc handler below already owns the key (letting the
     // manager also act would double-fire onClose). The SAME-ID RE-OPEN rule
@@ -8031,6 +8267,7 @@ export class SimpleUI {
         pointerEvents: 'auto', // tap the chip to open the coin receipt
         cursor: 'pointer',
         transition: 'transform 0.12s ease',
+        fontVariantNumeric: 'tabular-nums', // D11: digits keep one width
       });
       this.coinDiv.title = 'Coin history';
       this.coinDiv.addEventListener('click', () => this.onCoinChipClick?.());
@@ -8051,6 +8288,12 @@ export class SimpleUI {
     }
     const from = this._coinShown;
     const delta = total - from;
+    // D11: a coin in flight (ds:coin) lands first; the chip counts when it
+    // arrives. A's pays (no ds:coin) pop through the delta at once.
+    if (this.coinFlights > 0 && delta > 0) {
+      this.coinPending = total;
+      return;
+    }
     // Reduced motion: no count-up, no pop — just the value.
     if (a11y.reducedMotion || delta === 0) {
       SimpleUI.chipText(this.coinDiv, String(total));
@@ -8058,12 +8301,19 @@ export class SimpleUI {
       return;
     }
     const el = this.coinDiv;
-    // Amount-aware pop: bigger change → bigger pop (capped). Green flash on a
-    // gain, coral on a spend — earning and spending now read differently.
-    const mag = Math.min(Math.abs(delta), 50);
-    const scale = 1.15 + (mag / 50) * 0.4; // 1.15 .. 1.55
+    // Amount-aware pop (D11): 1.12 + 0.13 x min(1, |delta|/50), at most 1.25.
+    // A light-indigo flash on a gain, coral on a spend (green is the
+    // Work-with-me pill's alone).
+    // The chip keeps one width through the count (tabular digits; the wider
+    // of the two ends).
+    el.style.minWidth = '';
+    const w0 = el.offsetWidth;
+    SimpleUI.chipText(el, String(total));
+    el.style.minWidth = `${Math.max(w0, el.offsetWidth)}px`;
+    SimpleUI.chipText(el, String(from));
+    const scale = Math.min(1.25, 1.12 + 0.13 * Math.min(1, Math.abs(delta) / 50));
     el.style.transform = `scale(${scale.toFixed(2)})`;
-    el.style.color = delta > 0 ? '#7fe08a' : '#ff9a7a';
+    el.style.color = delta > 0 ? '#c9d4ff' : '#ff9a7a';
     window.setTimeout(() => {
       el.style.transform = 'scale(1)';
       el.style.color = '#ffd34a';
@@ -8083,10 +8333,75 @@ export class SimpleUI {
         SimpleUI.chipText(el, String(total));
         this._coinShown = total;
         this._coinAnim = 0;
+        el.style.minWidth = '';
       }
     };
     this._coinAnim = requestAnimationFrame(step);
   }
+
+  /** Coins in the air (D11) and the total waiting for them to land. */
+  private coinFlights = 0;
+  private coinPending: number | null = null;
+
+  /**
+   * D11 (contract with B9): 'ds:coin' {x, y, value} fires as a meadow or
+   * trail coin is collected, before the total updates. A 22 px coin flies
+   * from the pickup to the chip over 420 ms, then the chip counts and pops.
+   * Reduced motion, or no visible chip: no flight, the chip counts in place.
+   */
+  private readonly onCoinEvent = (e: Event): void => {
+    // The pop shows whatever the flight does: the next message waits it out.
+    this.coinPopUntil = Date.now() + SimpleUI.COIN_POP_MS;
+    const d = (e as CustomEvent<{ x?: number; y?: number }>).detail;
+    const chip = this.coinDiv;
+    if (!chip || a11y.reducedMotion || !d || !Number.isFinite(d.x) || !Number.isFinite(d.y)) return;
+    const r = chip.getBoundingClientRect();
+    if (r.width < 1 || getComputedStyle(chip).visibility === 'hidden') return;
+    const coin = document.createElement('div');
+    coin.dataset.coinFlight = '1';
+    coin.setAttribute('aria-hidden', 'true');
+    Object.assign(coin.style, {
+      position: 'fixed',
+      left: `${d.x! - 11}px`,
+      top: `${d.y! - 11}px`,
+      width: '22px',
+      height: '22px',
+      borderRadius: '50%',
+      background: 'radial-gradient(circle at 35% 30%, #fff3b0, #ffd34a 45%, #c99a1c)',
+      boxShadow: '0 0 0 2px #8a6a10 inset, 0 2px 6px rgba(0,0,0,0.35)',
+      pointerEvents: 'none',
+      zIndex: '1700',
+    });
+    this.overlay.appendChild(coin);
+    this.coinFlights++;
+    let landed = false;
+    const land = (): void => {
+      if (landed) return;
+      landed = true;
+      coin.remove();
+      this.coinFlights = Math.max(0, this.coinFlights - 1);
+      if (this.coinFlights === 0 && this.coinPending !== null) {
+        const t = this.coinPending;
+        this.coinPending = null;
+        this.updateCoinCounter(t);
+      }
+    };
+    const dx = r.left + r.width / 2 - d.x!;
+    const dy = r.top + r.height / 2 - d.y!;
+    // It lands when the flight finishes (its last frame sits on the chip);
+    // the timer is the fallback for a browser without Web Animations.
+    if (typeof coin.animate === 'function') {
+      coin.animate(
+        [
+          { transform: 'translate(0, 0) scale(1)' },
+          { transform: `translate(${dx * 0.35}px, ${dy * 0.35 - 40}px) scale(1.1)`, offset: 0.4 },
+          { transform: `translate(${dx}px, ${dy}px) scale(0.7)` },
+        ],
+        { duration: 420, easing: 'ease-in-out', fill: 'forwards' },
+      ).onfinish = () => requestAnimationFrame(land);
+    }
+    window.setTimeout(land, 600);
+  };
 
   private feedDiv: HTMLElement | null = null;
 
@@ -8198,7 +8513,7 @@ export class SimpleUI {
       });
       this.raceLine2 = document.createElement('div');
       Object.assign(this.raceLine2.style, {
-        fontSize: '11px',
+        fontSize: '12px',
         color: '#cfe0ff',
         marginTop: '1px',
       });
@@ -8610,18 +8925,18 @@ export class SimpleUI {
           return `<button type="button" data-part="${part}" data-hex="${hex}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="width:${sw}px;height:${sw}px;border-radius:6px;border:2px solid ${active ? '#fff' : 'transparent'};background:${hexStr(hex)};cursor:pointer;margin:0;padding:0;"></button>`;
         })
         .join('');
-      return `<div style="margin-bottom:7px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">${label}</div><div role="group" aria-label="${label}" style="display:grid;grid-template-columns:repeat(6, ${sw}px);gap:4px;">${swatches}</div></div>`;
+      return `<div style="margin-bottom:7px;"><div style="font-size:12px;color:#bbb;margin-bottom:2px;">${label}</div><div role="group" aria-label="${label}" style="display:grid;grid-template-columns:repeat(6, ${sw}px);gap:4px;">${swatches}</div></div>`;
     };
     const hatBtn = (id: string | null, icon: string): string => {
       const active = (opts.equippedHat ?? null) === id;
       const name = id ? `Hat: ${id.replace(/[-_]/g, ' ')}` : 'No hat';
-      return `<button type="button" data-hat="${id ?? ''}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="font-size:16px;min-width:${sw}px;min-height:${sw}px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
+      return `<button type="button" data-hat="${id ?? ''}" aria-label="${name}" aria-pressed="${active}" title="${name}" style="font-size:17px;min-width:${sw}px;min-height:${sw}px;padding:3px 7px;border-radius:8px;border:2px solid ${active ? '#fff' : 'transparent'};background:rgba(255,255,255,0.12);cursor:pointer;margin:2px;">${icon}</button>`;
     };
     const ownedBtns = opts.hats
       .filter((h) => opts.ownedHats.includes(h.id))
       .map((h) => hatBtn(h.id, h.icon))
       .join('');
-    const hatRow = `<div style="margin-bottom:6px;"><div style="font-size:11px;color:#bbb;margin-bottom:2px;">Hat</div><div style="display:flex;flex-wrap:wrap;align-items:center;">${hatBtn(null, '🚫')}${ownedBtns || '<span style="font-size:11px;color:#888;margin-left:4px;">buy hats at the 🛒 shop</span>'}</div></div>`;
+    const hatRow = `<div style="margin-bottom:6px;"><div style="font-size:12px;color:#bbb;margin-bottom:2px;">Hat</div><div style="display:flex;flex-wrap:wrap;align-items:center;">${hatBtn(null, '🚫')}${ownedBtns || '<span style="font-size:12px;color:#888;margin-left:4px;">buy hats at the 🛒 shop</span>'}</div></div>`;
 
     this.customizeDiv.innerHTML = `
       <div style="font-weight:700;margin-bottom:9px;">🎨 Appearance</div>
@@ -8803,13 +9118,14 @@ export class SimpleUI {
       }
     }
     if (this.compassLabel) {
-      // Narrow screens: drop the WORDS but keep the destination's icon (the
-      // label's first token) \u2014 a bare "103m" was direction with no subject,
-      // the least useful string a compass can show.
-      const compact = window.innerWidth < 480;
-      const text = compact
-        ? `${state.label.split(' ')[0]} ${Math.round(state.distance)}m`
-        : `${state.label} \u2022 ${Math.round(state.distance)}m`;
+      // Narrow screens keep the destination's icon (the label's first token)
+      // AND a short name (D16): a bare "103m" was direction with no subject.
+      // Icon-only only below 340 px.
+      const w = window.innerWidth;
+      const text =
+        w < 480
+          ? `${compassShortLabel(state.label, w < 340)} ${Math.round(state.distance)}m`
+          : `${state.label} \u2022 ${Math.round(state.distance)}m`;
       if (this._compassText !== text) {
         this._compassText = text;
         this.compassLabel.textContent = text;
@@ -8879,7 +9195,7 @@ export class SimpleUI {
       borderRadius: '14px',
       textAlign: 'center',
       pointerEvents: 'auto',
-      fontSize: '14.5px',
+      fontSize: '15px',
       // 1650 (was 1500): the modal band. At 1500 the manager's scrim (1640)
       // would grey out and swallow the panel's own clicks.
       zIndex: '1650',
@@ -9224,7 +9540,7 @@ export class SimpleUI {
         background: here ? 'rgba(255,255,255,0.08)' : 'transparent',
         color: here ? '#fff' : '#b8c4d6',
         border: `1px solid ${here ? accent : 'rgba(255,255,255,0.14)'}`,
-        fontSize: '12.5px',
+        fontSize: '13px',
         fontWeight: here ? '700' : '600',
         cursor: here ? 'default' : 'pointer',
       });
@@ -9516,7 +9832,7 @@ export class SimpleUI {
         'display:inline-flex;align-items:center;gap:6px;margin:5px 6px 5px 0;padding:9px 15px;border-radius:10px;text-decoration:none;font-size:14px;transition:transform 0.1s ease;' +
         (this.isTouch ? 'min-height:44px;box-sizing:border-box;' : '');
       const size = opts.small
-        ? `padding:${this.isTouch ? '9px 12px' : '6px 11px'};font-size:12.5px;`
+        ? `padding:${this.isTouch ? '9px 12px' : '6px 11px'};font-size:13px;`
         : '';
       const style = opts.primary
         ? base + size + `background:${DS.primary};color:#fff;font-weight:600;border:none;`
@@ -9535,14 +9851,14 @@ export class SimpleUI {
         <span data-email style="user-select:all;-webkit-user-select:all;cursor:text;font-size:15px;font-weight:600;color:#fff;
           background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.16);border-radius:8px;padding:8px 12px;">${OWNER.email}</span>
         <button type="button" data-copy="${OWNER.email}" title="Copy the email address" style="${this.isTouch ? 'min-height:44px;' : ''}padding:8px 14px;border-radius:8px;
-          border:1px solid rgba(120,160,255,0.45);background:rgba(80,130,255,0.18);color:#cfe0ff;font-size:13.5px;font-weight:600;cursor:pointer;">Copy</button>
+          border:1px solid rgba(120,160,255,0.45);background:rgba(80,130,255,0.18);color:#cfe0ff;font-size:14px;font-weight:600;cursor:pointer;">Copy</button>
         ${withMailto ? link(`mailto:${OWNER.email}`, '✉️ Email', { small: true }) : ''}
       </div>`;
     // One work-history row: role (+ where) left, dates right.
     const xp = (role: string, where: string, when: string): string =>
       `<li style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:6px 0;border-top:1px solid rgba(255,255,255,0.08);">
         <span><strong>${role}</strong>${where ? `, ${where}` : ''}</span>
-        <span style="white-space:nowrap;color:#aab6c8;font-size:12.5px;">${when}</span></li>`;
+        <span style="white-space:nowrap;color:#aab6c8;font-size:13px;">${when}</span></li>`;
     const chip = (t: string): string =>
       `<span style="background:#33333f;padding:5px 11px;border-radius:15px;font-size:13px;">${t}</span>`;
     // Optional lazy thumbnail — hidden by the error handler in showZonePanel if
@@ -9561,7 +9877,7 @@ export class SimpleUI {
     const workRow = (project: string, name: string, status: string): string =>
       `<button type="button" data-open-project="${project}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;margin:6px 0 0;${
         this.isTouch ? 'min-height:44px;' : ''
-      }padding:9px 12px;border-radius:10px;background:transparent;color:#e8edf5;border:1px solid rgba(255,212,121,0.4);font-size:13.5px;text-align:left;cursor:pointer;">
+      }padding:9px 12px;border-radius:10px;background:transparent;color:#e8edf5;border:1px solid rgba(255,212,121,0.4);font-size:14px;text-align:left;cursor:pointer;">
         <span><strong>${name}</strong> · ${status}</span><span aria-hidden="true" style="color:#ffd479;">›</span></button>`;
 
     const contents: { [key: string]: string } = {
@@ -9578,7 +9894,7 @@ export class SimpleUI {
           <li>🎨 <strong>Personal</strong> — kitchens, family recipes, creative tools</li>
           <li>📬 <strong>Contact</strong> — hiring, or have a project?</li>
         </ul>
-        <p style="margin-top:12px; font-size:13.5px; color:#cdd;">🛂 Visit all four
+        <p style="margin-top:12px; font-size:14px; color:#cdd;">🛂 Visit all four
         <em>in person</em> to stamp your <strong>Passport</strong> and earn the Founder's Crown 👑.</p>
         <p style="margin-top: 12px; font-size:13px; color:#aaa;"><em>${
           this.isTouch
@@ -9592,7 +9908,7 @@ export class SimpleUI {
         <p style="font-size:14px;">I build AI products end to end and make them safe to put in
         front of the public: the model call and its guardrails, the realtime client, the cloud
         functions and the tests.</p>
-        <p style="font-size:13.5px;color:#bcd;background:rgba(90,140,255,0.12);
+        <p style="font-size:14px;color:#bcd;background:rgba(90,140,255,0.12);
           border-radius:10px;padding:8px 12px;margin:10px 0;">🛠️ <strong>Now:</strong>
           founder &amp; lead developer at DigiScalability (solo, since Jan 2025), building this
           open-source (MIT) island, digiscalability.com and RankPilot (pre-launch). Before that:
@@ -9604,8 +9920,8 @@ export class SimpleUI {
           ${chip('Docker')} ${chip('GitHub Actions')}
         </div>
         <h3 style="margin-bottom:6px;">Education</h3>
-        <p style="font-size:13.5px;margin:0 0 4px;">BSc Computer Science, SZABIST, Islamabad (2016)</p>
-        <p style="font-size:13.5px;margin:0;">Master of Information Technology (coursework), Deakin
+        <p style="font-size:14px;margin:0 0 4px;">BSc Computer Science, SZABIST, Islamabad (2016)</p>
+        <p style="font-size:14px;margin:0;">Master of Information Technology (coursework), Deakin
         University, 2017–2019: 11 of 16 credit points completed</p>
         <div style="margin-top:16px;">
           ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
@@ -9619,16 +9935,16 @@ export class SimpleUI {
         <h2 style="margin-top: 0; color: #FF9800;">🚀 Projects</h2>
         ${card(
           `
-          <h3 style="margin:0 0 2px;">🏝️ This Island <span style="font-size:11px;color:#ffd479;">● you are standing in it</span></h3>
-          <p style="margin:6px 0;font-size:13.5px;">The flagship: a multiplayer 3D world (Three.js +
+          <h3 style="margin:0 0 2px;">🏝️ This Island <span style="font-size:12px;color:#ffd479;">● you are standing in it</span></h3>
+          <p style="margin:6px 0;font-size:14px;">The flagship: a multiplayer 3D world (Three.js +
           TypeScript) where <strong>${aiCount} villagers talk through Claude Haiku 4.5</strong>. A
           scheduled planner agent assigns their jobs each morning, they follow real daily schedules
           (and sleep in the cottages at night), and a nightly analyst agent (Claude Sonnet) emails a
           usage digest and files GitHub issues about its own island.</p>
-          <p style="margin:6px 0;font-size:12.5px;color:#cdd6e4;">Three.js + TypeScript + Firebase +
+          <p style="margin:6px 0;font-size:13px;color:#cdd6e4;">Three.js + TypeScript + Firebase +
           Claude · open source (MIT) · ~280 KB app + 175 KB three.js (brotli) · a hard
           monthly token cap on the model calls.</p>
-          <p style="margin:6px 0;font-size:12.5px;color:#cdd6e4;">Proof it runs itself: read the
+          <p style="margin:6px 0;font-size:13px;color:#cdd6e4;">Proof it runs itself: read the
           📰 Island Times (Portfolio menu) — compiled nightly by the analyst — or walk up to a
           villager and ask what they're doing today.</p>
           <div style="margin-top:8px;">
@@ -9662,11 +9978,11 @@ export class SimpleUI {
         `)}
         ${card(
           `
-          <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:11px;color:#ffcc80;">● live, pre-launch</span></h3>
-          <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Problem:</strong>
+          <h3 style="margin:0 0 2px;">📈 RankPilot <span style="font-size:12px;color:#ffcc80;">● live, pre-launch</span></h3>
+          <p style="margin:6px 0;font-size:14px;"><strong style="color:#ffcc80;">Problem:</strong>
           search is shifting from ten blue links to AI answers — and most sites are invisible to
           the models doing the answering.</p>
-          <p style="margin:6px 0;font-size:13.5px;"><strong style="color:#ffcc80;">Built:</strong>
+          <p style="margin:6px 0;font-size:14px;"><strong style="color:#ffcc80;">Built:</strong>
           a platform that audits a site's schema, content &amp; LLM-readiness and shows exactly
           what to fix. Solo build.</p>
           <p style="margin:6px 0;font-size:13px;color:#cdd6e4;"><strong>Status:</strong> live, pre-launch: no users beyond test accounts.</p>
@@ -9676,9 +9992,9 @@ export class SimpleUI {
         )}
         ${card(
           `
-          <h3 style="margin:0 0 2px;">🍫 ChocoMate <span style="font-size:11px;color:#aab;">● paused</span></h3>
-          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront', 820, 384)}
-          <p style="margin:6px 0;font-size:13.5px;">Direct-to-consumer chocolate brand —
+          <h3 style="margin:0 0 2px;">🍫 ChocoMate <span style="font-size:12px;color:#aab;">● paused</span></h3>
+          ${thumb('/assets/panels/chocomate.webp', 'ChocoMate storefront', 808, 384)}
+          <p style="margin:6px 0;font-size:14px;">Direct-to-consumer chocolate brand —
           the storefront, brand system, and content pipeline, end to end. Paused.</p>
           <div style="margin-top:6px;">${link('https://chocomate.au', '↗ chocomate.au', { small: true })}</div>
         `,
@@ -9687,17 +10003,17 @@ export class SimpleUI {
         <div style="text-align:left;">
           <div data-project="digiscalability">
           <h3 style="margin-bottom:4px;margin-top:14px;">🌐 digiscalability.com</h3>
-          <p style="margin-top:4px;font-size:13.5px;">My business site, built solo: Next.js 15 +
+          <p style="margin-top:4px;font-size:14px;">My business site, built solo: Next.js 15 +
           Firebase on Vercel.
           ${link('https://digiscalability.com', '↗ digiscalability.com')}</p>
           </div>
           <div data-project="banos">
           <h3 style="margin-bottom:4px;margin-top:14px;">📖 Bano's Cookbook</h3>
-          <p style="margin-top:4px;font-size:13.5px;">Digitising my mother's (Ammi's) handwritten recipes from 1981.</p>
+          <p style="margin-top:4px;font-size:14px;">Digitising my mother's (Ammi's) handwritten recipes from 1981.</p>
           </div>
           <div data-project="insta">
           <h3 style="margin-bottom:4px;margin-top:14px;">🧰 Insta Services API</h3>
-          <p style="margin-top:4px;font-size:13.5px;">Modernising an inherited 2016 Java system
+          <p style="margin-top:4px;font-size:14px;">Modernising an inherited 2016 Java system
           (Java API + Android app) with login rate limiting, health checks and nightly
           backups.</p>
           </div>
@@ -9711,15 +10027,15 @@ export class SimpleUI {
         are real.</p>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; text-align:left;">
           <div><h3 style="margin:0 0 4px;">🍽️ Kitchens</h3>
-            <p style="font-size:13.5px;">Chef at Mr. Miyagi and Baxter Tavern, Melbourne,
+            <p style="font-size:14px;">Chef at Mr. Miyagi and Baxter Tavern, Melbourne,
             2019 – 2024.</p></div>
           <div><h3 style="margin:0 0 4px;">📖 Family Heritage</h3>
-            <p style="font-size:13.5px;">Preserving my mother's (Ammi's) handwritten recipes from 1981 — the heart behind Bano's Cookbook.</p></div>
+            <p style="font-size:14px;">Preserving my mother's (Ammi's) handwritten recipes from 1981 — the heart behind Bano's Cookbook.</p></div>
           <div><h3 style="margin:0 0 4px;">🎬 Creative Tooling</h3>
-            <p style="font-size:13.5px;">Blender, DaVinci Resolve, ComfyUI — a full studio
+            <p style="font-size:14px;">Blender, DaVinci Resolve, ComfyUI — a full studio
             for product storytelling and 3D worlds like this one.</p></div>
           <div><h3 style="margin:0 0 4px;">📚 Always Learning</h3>
-            <p style="font-size:13.5px;">BSc Computer Science (SZABIST, 2016), and Master of IT
+            <p style="font-size:14px;">BSc Computer Science (SZABIST, 2016), and Master of IT
             coursework at Deakin: 11 of 16 credit points completed.</p></div>
         </div>
         <div style="margin-top:8px;">
@@ -9730,7 +10046,7 @@ export class SimpleUI {
       `,
       contact: `
         <h2 style="margin-top: 0; color: #9C27B0;">📬 Get In Touch</h2>
-        <p style="font-size:16px;font-weight:600;margin:0 0 6px;">Hiring, or have a project? This reaches me directly.</p>
+        <p style="font-size:17px;font-weight:600;margin:0 0 6px;">Hiring, or have a project? This reaches me directly.</p>
         ${emailRow(true)}
         <div style="margin: 12px 0 2px; display:flex; flex-wrap:wrap; justify-content:center;">
           ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
@@ -9742,7 +10058,7 @@ export class SimpleUI {
           ${link('https://instagram.com/digiscalability', '📸 Instagram', { small: true })}
           ${link('https://youtube.com/@DigiScalability', '▶️ YouTube', { small: true })}
         </div>
-        <p style="font-size:12.5px; color:#999;">Melbourne, Victoria. X, Instagram and YouTube
+        <p style="font-size:13px; color:#999;">Melbourne, Victoria. X, Instagram and YouTube
         are @digiscalability; LinkedIn is my personal profile.</p>
       `,
       // The recruiter front door (showHireCard / ?zone=hire). Copy comes from
@@ -9752,12 +10068,12 @@ export class SimpleUI {
       // and digiscalability.com/about lead with it too.
       hire: `
         <div style="font-size:12px;letter-spacing:1.2px;text-transform:uppercase;color:#ffd479;font-weight:700;margin:0 0 6px;display:flex;align-items:center;justify-content:center;gap:6px;">${icon('file-text', 16)}<span>Hiring?</span></div>
-        <h2 style="margin:0 0 2px;color:#fff;font-size:26px;">Abbas Ali</h2>
-        <p style="margin:0 0 10px;font-size:15px;font-weight:600;color:#cfe0ff;">AI &amp; software engineer · Melbourne</p>
-        <p style="margin:0 0 12px;font-size:13.5px;line-height:1.55;color:#dde3ee;">I build AI
+        <h2 style="margin:0 0 2px;color:#fff;font-family:var(--font-display, 'Bebas Neue', sans-serif);font-weight:400;font-size:32px;line-height:1;letter-spacing:0.5px;">Abbas Ali</h2>
+        <p style="margin:0 0 8px;font-size:15px;font-weight:600;color:#cfe0ff;">AI &amp; software engineer · Melbourne</p>
+        <p style="margin:0 0 12px;font-size:14px;line-height:1.55;color:#dde3ee;">I build AI
         products end to end and make them safe to put in front of the public: the model call and
         its guardrails, the realtime client, the cloud functions and the tests.</p>
-        <p style="margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(18,183,106,0.14);border:1px solid rgba(120,220,170,0.4);font-size:13.5px;line-height:1.45;color:#d7f5e6;">
+        <p style="margin:0 0 10px;padding:9px 12px;border-radius:10px;background:rgba(18,183,106,0.14);border:1px solid rgba(120,220,170,0.4);font-size:14px;line-height:1.45;color:#d7f5e6;">
           Open to AI and software engineering roles in Melbourne (full-time or contract).</p>
         <div data-hire-actions style="display:flex;flex-wrap:wrap;justify-content:center;">
           ${link(OWNER.linkedin, '🔗 LinkedIn', { primary: true })}
@@ -9767,10 +10083,10 @@ export class SimpleUI {
         ${emailRow(false)}
         <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin:10px 0 0;">
           <button type="button" data-hire-contact style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
-            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:13.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,212,121,0.45);font-size:14px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
             ${icon('send', 16)}<span>Send a message</span></button>
           <button type="button" data-hire-tour style="flex:1 1 180px;${this.isTouch ? 'min-height:44px;' : ''}padding:10px 14px;border-radius:10px;
-            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
+            background:rgba(38,38,51,0.5);color:#dfe6f2;border:1px solid rgba(255,255,255,0.16);font-size:14px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;">
             ${icon('play', 16)}<span>Or watch the highlights tour (under a minute)</span></button>
         </div>
         <div data-selected-work style="margin:16px 0 0;text-align:left;">
@@ -10503,7 +10819,7 @@ export class SimpleUI {
     this.stepHintAside(true);
     panel.innerHTML = `
       <div style="font-weight:600; font-size:15px; margin-bottom:4px;">📺 The wall screen</div>
-      <div style="font-size:12.5px; color:#aab; margin-bottom:12px;">What shall we watch? Paste a YouTube link (or any https page).</div>
+      <div style="font-size:13px; color:#aab; margin-bottom:12px;">What shall we watch? Paste a YouTube link (or any https page).</div>
     `;
     const presets = document.createElement('div');
     Object.assign(presets.style, { display: 'flex', gap: '8px', marginBottom: '10px' });
@@ -10557,7 +10873,7 @@ export class SimpleUI {
       background: DS.primary,
       color: '#fff',
       fontWeight: '600',
-      fontSize: '13.5px',
+      fontSize: '14px',
       cursor: 'pointer',
     });
     const submit = (): void => {
@@ -10589,7 +10905,7 @@ export class SimpleUI {
       background: 'none',
       border: 'none',
       color: '#99a',
-      fontSize: '16px',
+      fontSize: '17px',
       cursor: 'pointer',
       // 44px thumb box around the small glyph (same fix as the modal ×).
       width: '44px',
@@ -10660,7 +10976,7 @@ export class SimpleUI {
     });
     const hint = document.createElement('span');
     hint.textContent = 'blank? that site refuses embedding →';
-    Object.assign(hint.style, { fontSize: '11px', color: 'rgba(255,255,255,0.55)' });
+    Object.assign(hint.style, { fontSize: '12px', color: 'rgba(255,255,255,0.55)' });
     chrome.appendChild(hint);
     const mkChip = (label: string): HTMLElement => {
       const c = document.createElement('a');
@@ -10671,7 +10987,7 @@ export class SimpleUI {
         background: 'rgba(12,12,20,0.9)',
         border: '1px solid rgba(255,255,255,0.2)',
         color: '#dfe6ff',
-        fontSize: '12.5px',
+        fontSize: '13px',
         cursor: 'pointer',
         textDecoration: 'none',
       });
@@ -10750,9 +11066,9 @@ export class SimpleUI {
     });
     this.stepHintAside(true);
     panel.innerHTML = `
-      <div style="font-weight:600; font-size:14.5px; margin-bottom:2px;">🔒 The door is locked</div>
+      <div style="font-weight:600; font-size:15px; margin-bottom:2px;">🔒 The door is locked</div>
       <div style="font-size:12px; color:#aab; margin-bottom:10px;">Enter the door code</div>
-      <div id="pin-dots" style="letter-spacing:8px; font-size:22px; min-height:28px; margin-bottom:10px;">····</div>
+      <div id="pin-dots" style="letter-spacing:8px; font-size:20px; min-height:28px; margin-bottom:10px;">····</div>
     `;
     const dots = panel.querySelector('#pin-dots') as HTMLElement;
     // The locked door points to the Sailor (P2-D9, decision P2-2): after the
@@ -10813,7 +11129,7 @@ export class SimpleUI {
         border: '1px solid rgba(255,255,255,0.15)',
         background: 'rgba(255,255,255,0.06)',
         color: '#fff',
-        fontSize: '16px',
+        fontSize: '17px',
         cursor: 'pointer',
       });
       b.addEventListener('click', () => {
@@ -10859,6 +11175,7 @@ export class SimpleUI {
   }
 
   showDialogue(name: string, lines: string[]): void {
+    hapticPulse(18); // D15: an interaction that worked (a talk)
     this.dialogueLines = lines;
     this.dialogueIndex = 0;
     this.dialogueActive = true;
@@ -10904,7 +11221,7 @@ export class SimpleUI {
         padding: '0',
         borderRadius: '16px',
         pointerEvents: 'auto',
-        fontSize: '14.5px',
+        fontSize: '15px',
         border: '1px solid rgba(120, 160, 255, 0.22)', // de-glow twin of the chat panel
         boxShadow: '0 6px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05)',
         opacity: '0',
@@ -11058,8 +11375,13 @@ export class SimpleUI {
     this.panels.dispose();
     // Then the message queue: no closing panel below may re-arm its timers.
     this.stopMessages();
+    // And the door fade: a door still fading arms nothing more.
+    this.fadeStopped = true;
+    for (const t of this.fadeTimers) clearTimeout(t);
+    this.fadeTimers.clear();
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
+    window.removeEventListener('ds:coin', this.onCoinEvent);
     window.removeEventListener('ds:goals', this.onGoalsEvent);
     window.removeEventListener('keydown', this.onControlsKey);
     document.removeEventListener('keydown', this.onInputKey, true);

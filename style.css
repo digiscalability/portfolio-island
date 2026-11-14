@@ -63,6 +63,26 @@
   --ds-hit-target: 44px;
   --ds-type-floor: 12px;
   --ds-type-caption: 11px;
+  /* Motion (D11): ui/motion.ts's MOTION, mirrored; motionRules.test keeps
+     the two in step. */
+  --ds-dur-xs: 90ms;
+  --ds-dur-s: 140ms;
+  --ds-dur-m: 200ms;
+  --ds-dur-l: 240ms;
+  --ds-dur-xl: 450ms;
+  --ds-ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --ds-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ds-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* D12: controls take the text around them, not the user agent's font
+   (DA-06: every button rendered in Arial). */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
 }
 
 /* Screen-reader only helper (used for live regions and visually-hidden content) */
@@ -87,15 +107,18 @@
 }
 
 body {
-  font-family:
-    Inter,
-    ui-sans-serif,
+  /* D12: the system UI stack; Inter is dropped. index.html's :root defines
+     --font-ui; the literal stack is the fallback before it parses. */
+  font-family: var(
+    --font-ui,
     system-ui,
     -apple-system,
     'Segoe UI',
     Roboto,
     'Helvetica Neue',
-    Arial;
+    Arial,
+    sans-serif
+  );
   overflow: hidden;
   background: linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 100%);
   color: #0b1220;
@@ -350,16 +373,20 @@ body {
    the OS preference (media query) and the in-app ♿ toggle, which
    Accessibility.ts mirrors onto <html> as .reduced-motion — a media query
    cannot see the app toggle, and JS-written inline animations cannot be
-   reached any other way. Keep the two blocks identical. */
+   reached any other way. Keep the two blocks identical.
+   D11: not 'transition: none' any more. Nothing moves, but opacity and
+   colour still ramp over 120 ms, so a panel arrives instead of popping. */
 @media (prefers-reduced-motion: reduce) {
   * {
-    transition: none !important;
+    transition-property: opacity, color, background-color, border-color !important;
+    transition-duration: 120ms !important;
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
   }
 }
 html.reduced-motion * {
-  transition: none !important;
+  transition-property: opacity, color, background-color, border-color !important;
+  transition-duration: 120ms !important;
   animation-duration: 0.001ms !important;
   animation-iteration-count: 1 !important;
 }
@@ -416,7 +443,7 @@ html.reduced-motion #ld-orbit {
   padding: 14px 18px;
   border-radius: 14px;
   font-weight: 700;
-  font-size: 16px;
+  font-size: 17px;
   box-shadow: 0 12px 30px rgba(20, 24, 44, 0.12);
   touch-action: manipulation;
 }
@@ -519,7 +546,7 @@ html.reduced-motion #ld-orbit {
 }
 
 .welcome-hero h1 {
-  font-size: 34px;
+  font-size: 32px;
   margin-bottom: 8px;
 }
 
@@ -730,7 +757,7 @@ html.reduced-motion #ld-orbit {
 
 .chat-header h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .chat-close {
@@ -912,7 +939,7 @@ html.reduced-motion #ld-orbit {
 
 .customization-buttons button {
   padding: 12px 30px;
-  font-size: 16px;
+  font-size: 17px;
   border: none;
   border-radius: 10px;
   cursor: pointer;
@@ -1088,7 +1115,7 @@ html.reduced-motion #ld-orbit {
   border: none;
   color: white;
   padding: 10px 12px;
-  font-size: 18px;
+  font-size: 17px;
   border-radius: 8px;
   cursor: pointer;
 }
@@ -1193,6 +1220,17 @@ html.reduced-motion #ld-orbit {
 }
 .hud-btn:hover {
   filter: brightness(1.18);
+}
+/* D11: a press gives (the scale property composes with any inline
+   transform, such as the coin chip's pop). */
+.hud-btn:active {
+  scale: 0.96;
+}
+/* D11: the HUD waits out the intro fly-in ('ds:intro' start), then
+   PanelManager.releaseHud staggers it in. */
+.ds-intro-hold {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 /* The Controls & settings sheet (D8). Its keycaps take over the styling of
    index.html's old #controls-guide block, which nothing had used since the
@@ -1324,7 +1362,7 @@ html.reduced-motion #ld-orbit {
 #ds-drawer .ds-ic-slot {
   flex: none;
   width: 24px;
-  font-size: 18px;
+  font-size: 17px;
   line-height: 24px;
   text-align: center;
 }
@@ -1370,7 +1408,7 @@ kbd.kc {
   background: var(--kg-ring, #6fcf97);
   background: color-mix(in srgb, var(--kg-ring, #6fcf97) 85%, #fff);
   color: #0b1220;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.5px;
   line-height: 1;
@@ -1409,7 +1447,8 @@ kbd.kc {
 }
 .ds-controls-todo-done {
   flex: none;
-  color: #4ade80;
+  /* Light indigo, 9.8:1 on ink-900: green is the Work-with-me pill's alone. */
+  color: #b4bcff;
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
@@ -1426,7 +1465,7 @@ kbd.kc {
   background: rgba(76, 91, 224, 0.14);
   color: #fff;
   font: inherit;
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
@@ -1453,7 +1492,7 @@ kbd.kc {
 }
 .ds-controls-setting small {
   color: #c5cfdd;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .ds-controls-range {
   flex-direction: column;
@@ -1481,7 +1520,9 @@ kbd.kc {
   }
 }
 /* Filled actions (the primary and Work-with-me fills) darken on hover and
-   press, so white text never drops below AA, where the chips' brighten would. */
+   press. The filter dims the white label with the fill, so the pair keeps
+   4.5:1 only while k stays at 0.85 or above (tokens.test checks label × k
+   against fill × k; brightness(0.7) would drop the primary to 4.2:1). */
 .ds-press:hover,
 .hud-btn.ds-press:hover {
   filter: var(--ds-hover-filter);
@@ -1489,4 +1530,13 @@ kbd.kc {
 .ds-press:active,
 .hud-btn.ds-press:active {
   filter: var(--ds-press-filter);
+}
+/* D12: panel titles in the display face, 28 px (an inline size, such as the
+   hire card's 40 px name, still wins). */
+#ui-overlay [role='dialog'] h2 {
+  font-family: var(--font-display, 'Bebas Neue', sans-serif);
+  font-weight: 400;
+  font-size: 28px;
+  line-height: 1.1;
+  letter-spacing: 0.5px;
 }

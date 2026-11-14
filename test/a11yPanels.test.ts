@@ -1413,6 +1413,26 @@ describe('the zone panel and the door veil are made ahead (w1-fix, CO-A5)', () =
     ui.showZonePanel({ id: 'projects', name: 'projects' }, { source: 'menu' });
     expect(ui.panels.current()).toBe('zone');
   });
+
+  // round 3: the door's timers ran on after a test file tore its window down,
+  // and the 470 ms one called requestAnimationFrame on a dead global
+  // ('ReferenceError: requestAnimationFrame is not defined'). dispose() ends them.
+  test('dispose() ends a door that is still fading: no timer outlives the UI', () => {
+    vi.useFakeTimers();
+    const mid = vi.fn();
+    ui.fadeThrough(mid);
+    ui.dispose();
+    // The environment is gone: any late call to it would throw.
+    vi.stubGlobal('requestAnimationFrame', () => {
+      throw new ReferenceError('requestAnimationFrame is not defined');
+    });
+    try {
+      expect(() => vi.advanceTimersByTime(2000)).not.toThrow();
+      expect(mid).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 // P2-D8: the lessons card, and a parcel glyph on the island map.

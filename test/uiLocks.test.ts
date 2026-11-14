@@ -29,8 +29,11 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, test } from 'vitest';
 
+import { DISTRICTS, dirFor } from '../Districts';
 import { SimpleUI } from '../SimpleUI';
 import { DISTRICT_GLYPHS, ICON_NAMES, PARCEL_GLYPH, icon, spriteMarkup } from '../ui/icons';
+import { ISLAND_MAP_SPOTS, islandMapSvg } from '../ui/islandMap';
+import { mapUV, mapUVLonLat } from '../ui/mapProjection';
 
 /** visualPolish.test.ts's reader: CRLF folded, comments stripped before
  *  matching, so a lock can never be satisfied by its own explanatory prose. */
@@ -608,5 +611,204 @@ describe('D13: one icon set, the drawer in order', () => {
     expect(body).toContain("'calc(var(--sar, 0px) + 238px)'");
     // The six 30 px icon chips sit at +10 .. +200 on a 38 px pitch: they end at +230.
     expect(238).toBeGreaterThan(200 + 30);
+  });
+});
+
+// D18: the vector island map under the canvas markers.
+describe('D18: the vector map sits under the markers', () => {
+  test('the SVG is 6 KB gzip or less, decorative, and clipped to the disc', () => {
+    const svg = islandMapSvg();
+    expect(gzipSync(svg).length).toBeLessThanOrEqual(6 * 1024);
+    expect(svg).toContain('aria-hidden="true"');
+    expect(svg).toContain('viewBox="-1000 -1000 2000 2000"');
+    expect(svg).toContain('clip-path="url(#ds-map-disc)"');
+  });
+
+  test.each([430, 312, 240])(
+    'at D = %i px the five plazas sit within 4 px of their markers',
+    (D) => {
+      const R = D / 2 - 6; // showIslandMap's disc
+      // The SVG fills the disc's box (inset 6 px): 1000 map units = R px.
+      expect(ISLAND_MAP_SPOTS.map((s) => s.id).sort()).toEqual([
+        'contact',
+        'personal',
+        'professional',
+        'projects',
+        'welcome',
+      ]);
+      for (const d of DISTRICTS) {
+        const spot = ISLAND_MAP_SPOTS.find((s) => s.id === d.id)!;
+        const drawn = { x: D / 2 + (spot.x / 1000) * R, y: D / 2 + (spot.y / 1000) * R };
+        // The canvas side's own input: showIslandMap projects each district
+        // POI's WORLD position (ZonesManager seats a zone at dirFor(lon, lat)
+        // scaled to the surface) through mapUV, not the lon/lat pair.
+        for (const radius of [1, 47.5, 60]) {
+          const m = mapUV(dirFor(d.lon, d.lat).multiplyScalar(radius));
+          const marker = { x: D / 2 + m.u * R, y: D / 2 + m.v * R };
+          expect(Math.hypot(marker.x - drawn.x, marker.y - drawn.y), d.id).toBeLessThanOrEqual(4);
+        }
+        // ...and the lon/lat form the SVG was built from agrees with it.
+        const ll = mapUVLonLat(d.lon, d.lat);
+        const llPx = { x: D / 2 + ll.u * R, y: D / 2 + ll.v * R };
+        expect(Math.hypot(llPx.x - drawn.x, llPx.y - drawn.y), d.id).toBeLessThanOrEqual(4);
+      }
+    },
+  );
+
+  test('SimpleUI loads it on first open, as its own chunk; the canvas and art are aria-hidden', () => {
+    const s = src('SimpleUI.ts');
+    expect(s).toContain("import('./ui/islandMap')");
+    expect(s).not.toMatch(/^import .* from '\.\/ui\/islandMap';/m);
+    const i = s.indexOf('public showIslandMap(');
+    const body = s.slice(i, i + 4000);
+    expect(body).toContain("canvas.setAttribute('aria-hidden', 'true')");
+    expect(body).toContain("art.setAttribute('aria-hidden', 'true')");
+    expect(body).toContain('const { u, v } = mapUV(pos);');
+    // The district POIs the canvas projects are the zones' world positions,
+    // seated along dirFor(lon, lat): the direction the lock above feeds mapUV.
+    expect(src('ZonesManager.ts')).toContain('position: dirFor(d.lon, d.lat).multiplyScalar(R)');
+  });
+});
+
+// Chat lazy load, D's half (wave-4 carry-over). SimpleUI.ts imports nothing
+// from Chat.ts as a value, so A can load Chat with import(); the voice clip
+// limit is a local copy, pinned here to Chat.ts's value. Chat.ts is unowned
+// code, so this read is rule 5 in lock-census.
+describe('Chat lazy load: SimpleUI does not import Chat.ts as a value', () => {
+  test('no value import of ./Chat; a type-only import stays allowed', () => {
+    const s = src('SimpleUI.ts');
+    const imports = s.match(/^import\s+(?!type\b)[^;]*from\s+'\.\/Chat';/gm) || [];
+    expect(imports).toEqual([]);
+  });
+
+  test("the local VOICE_MAX_MS equals Chat.ts's", () => {
+    const local = /^const VOICE_MAX_MS = ([\d_]+);/m.exec(src('SimpleUI.ts'));
+    const chat = /^export const VOICE_MAX_MS = ([\d_]+);/m.exec(
+      raw('Chat.ts').replace(/\r\n/g, '\n'),
+    );
+    expect(local, 'SimpleUI.ts declares VOICE_MAX_MS').not.toBeNull();
+    expect(chat, 'Chat.ts exports VOICE_MAX_MS').not.toBeNull();
+    expect(Number(local![1].replace(/_/g, ''))).toBe(Number(chat![1].replace(/_/g, '')));
+  });
+});
+
+// D to C11 (wave-4 contract): C re-exports chocomate.webp at 808 x 384, and
+// the Projects card's <img> declares that box so the reserved space matches
+// the new file (c33884c). The thumb helper's width/height attributes.
+describe('C11 contract: the ChocoMate card declares 808 x 384', () => {
+  test('the ChocoMate thumb is 808 x 384', () => {
+    const s = src('SimpleUI.ts');
+    expect(s).toMatch(/thumb\('\/assets\/panels\/chocomate\.webp', '[^']*', 808, 384\)/);
+    expect(s).not.toMatch(/chocomate\.webp', '[^']*', 820,/);
+  });
+});
+
+// Round 3 play, Abbas's ruling: green belongs to the Work-with-me pill alone.
+// The coin chip flashed #7fe08a on a gain (2026-08), the coin history printed
+// gains in the same green, the shop's 'Equipped' button was solid #2e7d32 and
+// the lessons sheet's 'Done' was #4ade80. Each now sits on the indigo/neutral
+// palette, and keeps AA (4.5:1) on the ink it is read against.
+describe('green only on Work with me (round 3 play)', () => {
+  const rgb = (c: string): [number, number, number] => {
+    const hex = /^#([0-9a-f]{6})$/i.exec(c.trim());
+    if (hex)
+      return [0, 2, 4].map((i) => parseInt(hex[1].slice(i, i + 2), 16)) as [number, number, number];
+    const m = /rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/i.exec(c);
+    if (!m) throw new Error(`not a colour: ${c}`);
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+  /** Hue 80-170 degrees at a saturation of 0.25 or more. */
+  const isGreen = (c: string): boolean => {
+    const [r, g, b] = rgb(c).map((v) => v / 255);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    if (max === 0 || d / max < 0.25 || max !== g) return false;
+    const hue = 60 * ((b - r) / d + 2);
+    return hue >= 80 && hue <= 170;
+  };
+  const lum = (c: string): number => {
+    const [r, g, b] = rgb(c).map((v) => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a: string, b: string): number => {
+    const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  };
+  let ui: SimpleUI | null = null;
+  afterEach(() => {
+    ui?.dispose();
+    ui = null;
+    document.body.innerHTML = '';
+  });
+  const make = (): SimpleUI => {
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    return ui;
+  };
+
+  test('the guard knows green when it sees it', () => {
+    for (const c of ['#7fe08a', '#2e7d32', '#4ade80', '#4CAF50', 'rgb(46, 125, 50)']) {
+      expect(isGreen(c)).toBe(true);
+    }
+    for (const c of ['#ffd34a', '#ff9a7a', '#c9d4ff', '#22304a', '#8fc1ff']) {
+      expect(isGreen(c)).toBe(false);
+    }
+  });
+
+  test('the coin chip flashes no green on a gain, and the history prints none', () => {
+    const u = make();
+    u.updateCoinCounter(5);
+    u.updateCoinCounter(15);
+    const chip = document.querySelector<HTMLElement>('[data-guide="coin-chip"]')!;
+    expect(chip.style.color).not.toBe('');
+    expect(isGreen(chip.style.color)).toBe(false);
+    expect(contrast(chip.style.color, '#0b1220')).toBeGreaterThanOrEqual(4.5);
+    u.showReceipt([{ label: 'Coin', amount: 1, t: Date.now() }]);
+    const amt = [...document.querySelectorAll<HTMLElement>('strong')].find((s) =>
+      s.textContent?.includes('+1'),
+    )!;
+    expect(isGreen(amt.style.color)).toBe(false);
+    expect(contrast(amt.style.color, '#0b1220')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("the shop's Equipped button is neutral, not green", () => {
+    const u = make();
+    u.showShop(
+      {
+        coins: 0,
+        items: [
+          {
+            id: 'tophat',
+            icon: '🎩',
+            name: 'Top hat',
+            price: 5,
+            category: 'hats',
+            equippable: true,
+            owned: true,
+            equipped: true,
+          },
+        ],
+      },
+      () => {},
+      () => {},
+    );
+    document.querySelector<HTMLElement>('button[data-shop-tab="hats"]')!.click();
+    const btn = document.querySelector<HTMLElement>('button[data-shop-id="tophat"]')!;
+    expect(btn.textContent).toBe('Equipped');
+    const bg = btn.style.background || btn.style.backgroundColor;
+    expect(isGreen(bg)).toBe(false);
+    expect(contrast(btn.style.color, bg)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("the lessons sheet's Done reads in indigo, not green", () => {
+    const css = readFileSync(join(process.cwd(), 'style.css'), 'utf8').replace(/\r\n/g, '\n');
+    const rule = /\.ds-controls-todo-done \{([^}]*)\}/.exec(css)![1];
+    const color = /(?:^|\n)\s*color:\s*([^;]+);/.exec(rule)![1];
+    expect(isGreen(color)).toBe(false);
+    expect(contrast(color, '#101826')).toBeGreaterThanOrEqual(4.5);
   });
 });

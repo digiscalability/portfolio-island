@@ -277,3 +277,200 @@ describe('D7: one key renderer, and the input mode it follows', () => {
     expect(handler).toContain('e.target instanceof HTMLCanvasElement');
   });
 });
+
+// D15: a joystick that lands under the thumb. happy-dom lays nothing out, so
+// every rect is at 0,0 and the hit square's 55..111 px clamp is easy to read.
+describe('D15: the joystick lands under the thumb', () => {
+  let ui: SimpleUI | null = null;
+  let vib: Array<number | number[]> = [];
+  afterEach(() => {
+    ui?.dispose();
+    ui = null;
+    history.replaceState(null, '', '/');
+    vi.useRealTimers();
+    try {
+      localStorage.clear();
+    } catch {
+      /* none */
+    }
+  });
+  const boot = (): SimpleUI => {
+    history.replaceState(null, '', '/?touch=1');
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    localStorage.setItem('ds_haptics', '1');
+    vib = [];
+    Object.defineProperty(navigator, 'vibrate', {
+      configurable: true,
+      value: (p: number | number[]) => {
+        vib.push(p);
+        return true;
+      },
+    });
+    ui = new SimpleUI('ui-overlay');
+    return ui;
+  };
+  const touch = (el: Element, type: string, x: number, y: number, id = 1): void => {
+    const ev = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, 'changedTouches', {
+      value: [{ identifier: id, clientX: x, clientY: y }],
+    });
+    el.dispatchEvent(ev);
+  };
+  const parts = () => {
+    const ring = document.querySelector<HTMLElement>('[data-guide="joystick"]')!;
+    return { ring, hit: ring.parentElement!, thumb: ring.firstElementChild as HTMLElement };
+  };
+  const shift = (el: HTMLElement): number[] => {
+    const m = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(el.style.transform);
+    return m ? [Number(m[1]), Number(m[2])] : [0, 0];
+  };
+  const mag = (u: SimpleUI): number => Math.hypot(u.getJoystick().forward, u.getJoystick().strafe);
+  const RUN = /#ffb547|rgb\(255,181,71\)/;
+
+  test('the hit square, the ring and its rest spot keep the anchors A6 and mobile.cjs use', () => {
+    boot();
+    const { ring, hit } = parts();
+    expect(hit.style.width).toBe('166px');
+    expect(ring.dataset.stickRadius).toBe('40'); // full deflection, for the probes
+    expect(ring.style.left).toBe('26px');
+    expect(ring.style.bottom).toBe('26px');
+  });
+
+  test('a touchdown anywhere in the square reads |v| = 0; the ring follows the thumb, clamped', () => {
+    const u = boot();
+    const { ring, hit } = parts();
+    const points: Array<[number, number]> = [
+      [4, 4],
+      [162, 4],
+      [4, 162],
+      [162, 162],
+      [83, 4],
+      [90, 90],
+    ];
+    for (const [x, y] of points) {
+      touch(hit, 'touchstart', x, y);
+      expect(mag(u), `${x},${y}`).toBe(0);
+      // The ring moves by transform from its rest spot (left 26, top 30 in
+      // the square); it stays inside: left in [0, 56], top in [0, 56].
+      const [ox, oy] = shift(ring);
+      expect(26 + ox).toBeGreaterThanOrEqual(0);
+      expect(26 + ox).toBeLessThanOrEqual(56);
+      expect(30 + oy).toBeGreaterThanOrEqual(0);
+      expect(30 + oy).toBeLessThanOrEqual(56);
+      expect(ring.style.left).toBe('26px'); // the rest spot never moves
+      touch(hit, 'touchend', x, y);
+    }
+    touch(hit, 'touchstart', 90, 90);
+    expect(shift(ring)).toEqual([9, 5]); // centre at 90,90: rest centre is 81,85
+  });
+
+  test('hysteresis: engage at 12%, release below 8%, continuous from 8%', () => {
+    const u = boot();
+    const { hit } = parts();
+    touch(hit, 'touchstart', 80, 80);
+    touch(hit, 'touchmove', 80, 80 - 4.4); // 11%: not yet
+    expect(mag(u)).toBe(0);
+    touch(hit, 'touchmove', 80, 80 - 5); // 12.5%: engaged
+    expect(mag(u)).toBeCloseTo((0.125 - 0.08) / 0.92, 6);
+    expect(u.getJoystick().forward).toBeGreaterThan(0); // up the screen walks forward
+    touch(hit, 'touchmove', 80, 80 - 3.6); // 9%: still engaged, small
+    expect(mag(u)).toBeCloseTo((0.09 - 0.08) / 0.92, 6);
+    touch(hit, 'touchmove', 80, 80 - 3); // 7.5%: released
+    expect(mag(u)).toBe(0);
+    touch(hit, 'touchmove', 80, 80 - 40);
+    expect(mag(u)).toBeCloseTo(1, 6);
+  });
+
+  test('on release (only) the thumb eases home over 120 ms and the ring drifts back', () => {
+    const u = boot();
+    const { ring, hit, thumb } = parts();
+    touch(hit, 'touchstart', 90, 90);
+    expect(thumb.style.transition).toBe('none');
+    touch(hit, 'touchmove', 90, 60);
+    touch(hit, 'touchend', 90, 60);
+    expect(mag(u)).toBe(0);
+    expect(thumb.style.transition).toContain('120ms');
+    expect(shift(thumb)).toEqual([0, 0]);
+    expect(ring.style.transition).toContain('200ms');
+    expect(shift(ring)).toEqual([0, 0]);
+    expect(ring.style.left).toBe('26px');
+    expect(ring.style.bottom).toBe('26px');
+  });
+
+  test("the ring turns #ffb547 after 250 ms at the run threshold (A's 0.95 / 250 ms)", () => {
+    vi.useFakeTimers();
+    const u = boot();
+    const { ring, hit } = parts();
+    touch(hit, 'touchstart', 80, 80);
+    touch(hit, 'touchmove', 80, 20);
+    expect(mag(u)).toBeGreaterThanOrEqual(0.95);
+    vi.advanceTimersByTime(200);
+    expect(ring.style.border.replace(/\s/g, '')).not.toMatch(RUN);
+    vi.advanceTimersByTime(80);
+    expect(ring.style.border.replace(/\s/g, '')).toMatch(RUN);
+    touch(hit, 'touchmove', 80, 70);
+    expect(ring.style.border.replace(/\s/g, '')).not.toMatch(RUN);
+    const consts = fn('SimpleUI.ts', 'const STICK_RUN_MAG', 200);
+    expect(consts).toContain('STICK_RUN_MAG = 0.95');
+    expect(consts).toContain('STICK_RUN_MS = 250');
+  });
+
+  test('haptics: engage 10 ms, the run colour 10 ms, a button 12 ms, a door or talk 18 ms', () => {
+    vi.useFakeTimers();
+    const u = boot();
+    const { hit } = parts();
+    touch(hit, 'touchstart', 80, 80);
+    expect(vib).toEqual([10]);
+    touch(hit, 'touchmove', 80, 20);
+    vi.advanceTimersByTime(300);
+    expect(vib).toEqual([10, 10]);
+    touch(hit, 'touchend', 80, 20);
+    const use = document.querySelector('[data-guide="use-button"]')!;
+    touch(use, 'touchstart', 0, 0, 2);
+    touch(use, 'touchend', 0, 0, 2);
+    expect(vib).toEqual([10, 10, 12]);
+    u.showDialogue('Elder Sage', ['Hello']);
+    expect(vib.at(-1)).toBe(18);
+    u.fadeThrough(() => {});
+    expect(vib.at(-1)).toBe(18);
+    // A refused buy: the shop's rows buzz the pattern on a disabled button.
+    expect(src('SimpleUI.ts')).toContain('hapticPulse([12, 40, 12])');
+  });
+
+  test("the MOVE caption shows until the stick's first use, then never again", () => {
+    boot();
+    const { ring, hit } = parts();
+    expect(ring.querySelector('.ds-caption')?.textContent).toBe('Move');
+    // A tap that never engages the stick leaves the caption up.
+    touch(hit, 'touchstart', 80, 80);
+    touch(hit, 'touchend', 80, 80);
+    expect(ring.querySelector('.ds-caption')?.textContent).toBe('Move');
+    expect(localStorage.getItem('ds_move_seen')).toBeNull();
+    // The first engage (>= 12% deflection) removes it for good.
+    touch(hit, 'touchstart', 80, 80);
+    touch(hit, 'touchmove', 80, 60);
+    expect(ring.querySelector('.ds-caption')).toBeNull();
+    expect(localStorage.getItem('ds_move_seen')).toBe('1');
+    ui?.dispose();
+    document.body.innerHTML = '<div id="ui-overlay"></div>';
+    ui = new SimpleUI('ui-overlay');
+    expect(document.querySelector('[data-guide="joystick"] .ds-caption')).toBeNull();
+  });
+
+  test('the action buttons are named buttons: Use (E), Jump (Space), Wave (Q)...', () => {
+    boot();
+    const labels = [...document.querySelectorAll('.ds-touch-ctl[role="button"]')].map((b) =>
+      b.getAttribute('aria-label'),
+    );
+    for (const l of [
+      'Use (E)',
+      'Jump (Space)',
+      'Wave (Q)',
+      'Dive (Shift)',
+      'Feed (F)',
+      'Eat (G)',
+    ]) {
+      expect(labels).toContain(l);
+    }
+  });
+});

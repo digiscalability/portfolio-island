@@ -43,10 +43,23 @@ describe('the compass pill is the map’s front door', () => {
     expect((body.match(/pointerEvents: 'none'/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 
-  test('narrow screens keep the destination ICON, never a bare distance', () => {
+  test('narrow screens keep the destination icon AND a short name, never a bare distance (D16)', () => {
     const s = stripped('SimpleUI.ts');
-    expect(s).toContain("state.label.split(' ')[0]");
-    expect(s).not.toMatch(/compact\s*\?\s*`\$\{Math\.round\(state\.distance\)\}m`/);
+    expect(s).toContain('compassShortLabel(state.label, w < 340)');
+    expect(s).toMatch(/w < 480\s*\?/);
+    expect(s).not.toMatch(/\?\s*`\$\{Math\.round\(state\.distance\)\}m`/);
+  });
+
+  test('the short name: icon plus first word up to 9 characters; icon-only under 340 px', async () => {
+    const { compassShortLabel: short } = await import('../SimpleUI');
+    expect(short('🏛️ Professional district')).toBe('🏛️ Professio');
+    expect(short('🤖 The Storyteller')).toBe('🤖 Storytell'); // article skipped, cut at 9
+    expect(short('📦 Parcel')).toBe('📦 Parcel');
+    expect(short('🏁 Ring 3/7')).toBe('🏁 Ring 3/7'); // P2-A8's counter stays whole
+    expect(short('Ring 3/7')).toBe('Ring 3/7');
+    expect(short('🏁 Finish line')).toBe('🏁 Finish');
+    expect(short('🏛️ Professional district', true)).toBe('🏛️');
+    expect(short('Finish line', true)).toBe('Finish'); // no icon: the name stays
   });
 });
 
@@ -85,8 +98,26 @@ describe('phase 2: the map teaches the island’s shape', () => {
     // RADAR_RANGE (1.35 rad) < district spacing (1.57 rad) means neighbours
     // are ALWAYS edge-clamped — they were anonymous coloured dots.
     const s = stripped('SimpleUI.ts');
-    expect(s).toContain('rimLabels');
-    expect(s).toMatch(/rimLabels\.some\(/); // overlap-skip
+    expect(s).toContain('labelBoxes');
+    // overlap-skip (D16): a label whose box hits one already drawn is dropped
+    expect(s).toMatch(/labelBoxes\.some\(/);
+    expect(s).toMatch(/if \(!collides\(nx, ny, w, h\)\)/);
+  });
+
+  test('every word on the radar, the ONLINE caption included, is 10.5 px or more on screen (D16)', () => {
+    // phone.cjs measures each fillText of two or more letters: at 9 px the
+    // '1 ONLINE' caption read 6.7 px cap height on the 104 px landscape disc.
+    // Only the single-letter N/E/S/W ticks may stay smaller.
+    const s = stripped('SimpleUI.ts');
+    const i = s.indexOf('updateMinimap(data: {');
+    const body = s.slice(i, s.indexOf('\n  showShop(', i));
+    expect(body).toContain('ONLINE');
+    const sizes = [...body.matchAll(/\$\{\(([\d.]+) \* ts\)\.toFixed\(1\)\}px/g)].map((m) => +m[1]);
+    const small = sizes.filter((n) => n < 10.5);
+    // N at 10 px, E, S and W at 8 px; nothing else.
+    expect(small).toEqual([10, 8, 8, 8]);
+    const pill = body.slice(body.indexOf('ONLINE'), body.indexOf('ONLINE') + 400);
+    expect(pill).toMatch(/ctx\.font = `700 \$\{\(10\.5 \* ts\)\.toFixed\(1\)\}px/);
   });
 });
 

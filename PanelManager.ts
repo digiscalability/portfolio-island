@@ -75,6 +75,7 @@
  *     or history. 'hard' hides outright on desktop too, where a panel only
  *     dims: the Leave button used to sit on top of the weather chip.
  */
+import { animateIn, animateOut, fadeIn, staggerIn } from './ui/motion';
 
 /** 'aux-controls' = the second-rank touch controls (FEED/EAT/💬/🎤): panels
  *  that must keep USE/JUMP visible (NPC dialogue advances on USE) can hide
@@ -229,6 +230,8 @@ interface Entry {
   opener: HTMLElement | null;
   /** Its close has run the focus hand-back already. */
   restored: boolean;
+  /** Where spec.el sat while open: an exit fades it out there (D11). */
+  parent?: ParentNode | null;
 }
 
 export class PanelManager {
@@ -244,6 +247,11 @@ export class PanelManager {
   /** Desktop elements a hard mode took out, and the inline display each had. */
   private readonly hardHidden = new Map<HTMLElement, string>();
   private readonly stack: Entry[] = [];
+  /** Panels fading out (D11), by id: a re-open cancels the exit. */
+  private readonly exits = new Map<string, () => void>();
+  /** The HUD is held hidden for the intro (D11): layer elements carry
+   *  .ds-intro-hold until releaseHud() staggers them in. */
+  private hudHeld = false;
   private readonly scrim: HTMLDivElement;
   private sweeping = false;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
@@ -358,6 +366,7 @@ export class PanelManager {
     if (!this.bases.has(el)) this.bases.set(el, el.style.display);
     list.push({ el, baseDisplay: this.bases.get(el) ?? '' });
     this.layers.set(layer, list);
+    if (this.hudHeld) el.classList.add('ds-intro-hold');
     // A panel may already be open when a late element registers (the coin
     // counter is created on first update) — apply the current policy to it.
     this.applyState();
@@ -384,6 +393,7 @@ export class PanelManager {
    * stack, applies layer policy + scrim.
    */
   open(id: string, spec: PanelSpec): void {
+    this.exits.get(id)?.(); // a re-open cancels a running exit
     const top = this.stack[this.stack.length - 1];
     if (top && top.id === id) {
       // Same-id re-open: replace in place, never fire close() (see header).
@@ -408,12 +418,14 @@ export class PanelManager {
         } catch {
           /* one broken teardown must not strand the sweep */
         }
+        this.fadeOut(entry);
       }
     } finally {
       this.sweeping = false;
     }
     const entry: Entry = { id, spec, seen: false, opener, restored: false };
     this.stack.push(entry);
+    animateIn(spec.el); // D11: the stack update stays synchronous
     this.applyState();
     this.checkSoon();
     this.focusSoon(entry);
@@ -424,6 +436,7 @@ export class PanelManager {
     if (this.sweeping) return;
     const idx = this.stack.findIndex((e) => e.id === id);
     const gone = idx !== -1 ? this.stack.splice(idx, 1)[0] : null;
+    if (gone) this.fadeOut(gone);
     // Re-derive even for an id that is not open: a close path that named the
     // wrong id has still removed its DOM, and the detached-panel pop below is
     // what takes its scrim down.
@@ -443,6 +456,7 @@ export class PanelManager {
     // Idempotence: if close() didn't notify, pop it ourselves.
     const idx = this.stack.indexOf(top);
     if (idx !== -1) this.stack.splice(idx, 1);
+    this.fadeOut(top);
     this.applyState();
     this.handBackFocus(top);
     return true;
@@ -458,6 +472,7 @@ export class PanelManager {
         } catch {
           /* keep going */
         }
+        this.fadeOut(this.stack[i]);
       }
       this.stack.length = 0;
     } finally {
@@ -517,6 +532,60 @@ export class PanelManager {
       window.removeEventListener('pageshow', this.onPageShow);
     }
     this.scrim.remove();
+    for (const stop of [...this.exits.values()]) stop();
+  }
+
+  /**
+   * D11: a closed panel fades out where it was. Its own close removed the
+   * element; it goes back, inert and hidden from assistive tech, for 140 ms
+   * (reduced motion: a 120 ms opacity ramp), then leaves for good. The stack
+   * already moved on synchronously and focus is not held back. Off under
+   * test, where the element must be gone the moment close() returns.
+   */
+  private fadeOut(e: Entry): void {
+    const el = e.spec.el;
+    const parent = e.parent;
+    if (!el || !e.seen || el.isConnected || !parent || !(parent as Node).isConnected) return;
+    if (import.meta.env.MODE === 'test' || typeof el.animate !== 'function') return;
+    this.exits.get(e.id)?.();
+    const hadAria = el.getAttribute('aria-hidden');
+    const hadPe = el.style.pointerEvents;
+    el.setAttribute('aria-hidden', 'true');
+    el.inert = true;
+    el.style.pointerEvents = 'none';
+    parent.appendChild(el);
+    const stop = animateOut(el, () => {
+      el.remove();
+      if (hadAria === null) el.removeAttribute('aria-hidden');
+      else el.setAttribute('aria-hidden', hadAria);
+      el.inert = false;
+      el.style.pointerEvents = hadPe;
+      if (this.exits.get(e.id) === stop) this.exits.delete(e.id);
+    });
+    if (el.isConnected) this.exits.set(e.id, stop);
+  }
+
+  /** D11: hide every HUD layer for the intro ('ds:intro' start). Elements
+   *  registered while held are hidden too. */
+  holdHud(): void {
+    if (this.hudHeld) return;
+    this.hudHeld = true;
+    for (const el of this.layerEls()) el.classList.add('ds-intro-hold');
+  }
+
+  /** D11: the intro settled (or its fallback fired): stagger the HUD in. */
+  releaseHud(): void {
+    if (!this.hudHeld) return;
+    this.hudHeld = false;
+    const els = this.layerEls();
+    for (const el of els) el.classList.remove('ds-intro-hold');
+    staggerIn(els);
+  }
+
+  private layerEls(): HTMLElement[] {
+    const out = new Set<HTMLElement>();
+    for (const list of this.layers.values()) for (const { el } of list) out.add(el);
+    return [...out];
   }
 
   /**
@@ -530,10 +599,13 @@ export class PanelManager {
       const e = this.stack[i];
       const el = e.spec.el;
       if (!el) continue;
-      if (el.isConnected) e.seen = true;
-      else if (e.seen) {
+      if (el.isConnected) {
+        e.seen = true;
+        e.parent = el.parentNode;
+      } else if (e.seen) {
         this.stack.splice(i, 1);
         popped.push(e);
+        this.fadeOut(e);
       }
     }
     return popped;
@@ -559,7 +631,9 @@ export class PanelManager {
   private applyState(): void {
     const popped = this.sweeping ? [] : this.pruneDetached();
     const top = this.stack[this.stack.length - 1];
+    const scrimWas = this.scrim.style.display;
     this.scrim.style.display = top && top.spec.kind === 'modal' ? 'block' : 'none';
+    if (scrimWas !== 'block' && this.scrim.style.display === 'block') fadeIn(this.scrim); // D11
     // Union of hides across ALL open panels (a 2-deep watch stack must keep
     // suppressing what the lower panel suppressed).
     const hidden = new Set<HudLayer>();

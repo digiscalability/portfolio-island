@@ -1,7 +1,7 @@
 // Content-Security-Policy for the island (vercel.json), the share route's
 // own policy (api/z.js) and the report collector (api/csp-report.js).
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
@@ -60,7 +60,7 @@ describe('site policy (vercel.json)', () => {
   });
 
   test("allows index.html's inline script and inline handlers by hash", () => {
-    // Editing the inline boot guard or the font loader's onload changes its
+    // Editing the inline boot guard changes its
     // hash: put the new value from this failure into vercel.json.
     const html = src('index.html');
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
@@ -70,6 +70,31 @@ describe('site policy (vercel.json)', () => {
     for (const code of [...scripts, ...handlers])
       expect(allowed, code.slice(0, 60)).toContain(sha(code));
     if (handlers.length) expect(allowed).toContain("'unsafe-hashes'");
+  });
+
+  test('self-hosted fonts (D12): no inline handler, no Google Fonts host, no unsafe-hashes', () => {
+    const html = src('index.html');
+    expect([...html.matchAll(/\son[a-z]+="([^"]*)"/g)]).toEqual([]);
+    expect(html).not.toMatch(/fonts\.(googleapis|gstatic)\.com/);
+    expect(reportOnly.get('script-src')).not.toContain("'unsafe-hashes'");
+    // One hash left: the inline boot script's.
+    expect(
+      (reportOnly.get('script-src') ?? []).filter((v) => v.startsWith("'sha256-")),
+    ).toHaveLength(1);
+    expect(reportOnly.get('style-src')).toEqual(["'self'", "'unsafe-inline'"]);
+    expect(reportOnly.get('font-src')).toEqual(["'self'", 'data:']);
+    // Both faces are files in public/fonts, preloaded (Bebas) or fetched on
+    // first use (Patrick Hand), and declared by their exact family names.
+    for (const f of ['bebas-neue-latin.woff2', 'patrick-hand-latin.woff2']) {
+      expect(existsSync(join(process.cwd(), 'public/fonts', f)), f).toBe(true);
+    }
+    expect(html).toMatch(
+      /rel="preload"\s+as="font"\s+type="font\/woff2"\s+href="\/fonts\/bebas-neue-latin\.woff2"\s+crossorigin/,
+    );
+    expect(html).not.toContain('href="/fonts/patrick-hand-latin.woff2"');
+    expect(html).toContain("font-family: 'Bebas Neue';");
+    expect(html).toContain("font-family: 'Patrick Hand';");
+    expect(html).toContain("font-family: 'Bebas Neue Fallback';");
   });
 
   test('connect-src reaches the hosts the client calls', () => {
