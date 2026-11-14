@@ -348,22 +348,40 @@ export class SimpleUI {
     return this.fadeDiv;
   }
 
+  /** The door fade's pending timers; dispose() clears them. */
+  private fadeTimers = new Set<number>();
+  /** dispose() ran: a door still fading stops where it is. */
+  private fadeStopped = false;
+
   /** Fade to black, run midCb at the peak, fade back in — for door transitions. */
   fadeThrough(midCb: () => void): void {
+    if (this.fadeStopped) return;
     hapticPulse(18); // D15: an interaction that worked (a door)
     const d = this.ensureFadeDiv();
     d.style.pointerEvents = 'auto';
     d.style.opacity = '1';
-    window.setTimeout(() => {
+    // Round 3: these timers ran on after a test file's window was torn down
+    // and called requestAnimationFrame on a dead global. They are tracked,
+    // dispose() clears them, and the rAF is guarded for any that slip by.
+    const later = (fn: () => void, ms: number): void => {
+      const t = window.setTimeout(() => {
+        this.fadeTimers.delete(t);
+        if (!this.fadeStopped) fn();
+      }, ms);
+      this.fadeTimers.add(t);
+    };
+    later(() => {
       try {
         midCb();
       } catch {
         /* keep the fade sane even if the swap throws */
       }
-      requestAnimationFrame(() => {
+      const show = (): void => {
         d.style.opacity = '0';
-      });
-      window.setTimeout(() => {
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(show);
+      else show();
+      later(() => {
         d.style.pointerEvents = 'none';
       }, 520);
     }, 470);
@@ -11347,6 +11365,10 @@ export class SimpleUI {
     this.panels.dispose();
     // Then the message queue: no closing panel below may re-arm its timers.
     this.stopMessages();
+    // And the door fade: a door still fading arms nothing more.
+    this.fadeStopped = true;
+    for (const t of this.fadeTimers) clearTimeout(t);
+    this.fadeTimers.clear();
     window.removeEventListener('ds:guide', this.onGuideEvent);
     window.removeEventListener('ds:intro', this.onIntroEvent);
     window.removeEventListener('ds:coin', this.onCoinEvent);
